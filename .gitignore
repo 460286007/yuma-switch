@@ -1,0 +1,49 @@
+# ===== 依赖 =====
+node_modules/
+
+# ===== 构建产物 =====
+dist/
+release/
+/src-tauri/target/
+/src-tauri/gen/schemas/
+build-log.txt
+*.tsbuildinfo
+
+# ===== 日志与本地环境 =====
+*.log
+.env
+.env.local
+.npmrc
+
+# ===== 编辑器 / 系统 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== AI 助手本地配置 =====
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+CODEBUDDY.md
+/.claude
+/.codex
+/.gemini
+/.cc-switch
+.history
+.spec-workflow/
+.worktrees/
+copilot-api
+
+# ===== 测试 / 覆盖率 =====
+vitest-report.json
+coverage/
+
+# ===== 平台构建产物 =====
+# Flatpak
+flatpak/cc-switch.deb
+flatpak-build/
+flatpak-repo/
+nul
+mainWindow.js
