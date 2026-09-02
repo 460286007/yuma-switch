@@ -34,7 +34,7 @@ Yuma Switch 是一个桌面应用（Windows / macOS / Linux），用来集中管
 | 功能 | 说明 |
 |---|---|
 | 🆕 **ZCode 应用支持** | 在应用列表中管理 ZCode（`~/.zcode/cli/config.json`）的供应商，预设 BigModel / Z.AI，切换即写 `provider["cc-switch"]` + `model.main` |
-| 🔀 **Git 账号管理** | 顶栏 Git 入口集中管理 **Gitee / GitHub** 多套账号（用户名 / 邮箱 / 密码 / 本地项目路径），点「使用」即执行 `git config --global user.name / user.email` 切换全局身份 |
+| 🔀 **Git 账号管理** | 顶栏 Git 入口集中管理 **GitHub** 多套账号（用户名 / 邮箱 / 密码 / 本地项目路径），点「使用」即执行 `git config --global user.name / user.email` 切换全局身份 |
 | 🎨 **Yuma 品牌与主题** | 应用更名 Yuma Switch、专属图标、紫罗兰主题（浅紫 / 深紫） |
 
 ## 🛠️ 开发与构建
