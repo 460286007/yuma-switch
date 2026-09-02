@@ -4,19 +4,17 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ApiKeyInput from "@/components/providers/forms/ApiKeyInput";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { cn } from "@/lib/utils";
 import {
   Check,
+  Download,
   Folder,
   FolderSearch,
   Pencil,
+  Plus,
+  Save,
+  SquareTerminal,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -43,6 +41,7 @@ interface AccountWithPlatform {
 
 const emptyDraft = (): GitAccount => ({
   id: "",
+  title: "",
   name: "",
   email: "",
   password: "",
@@ -63,6 +62,10 @@ export function GitAccountsPage({
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
+  // Git 本体安装检测：undefined=检测中，null=未安装，string=版本号
+  const [gitVersion, setGitVersion] = useState<string | null | undefined>(
+    undefined,
+  );
 
   // 编辑/新增对话框状态
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -102,6 +105,22 @@ export function GitAccountsPage({
     setLoading(true);
     void reload();
   }, [reload]);
+
+  // Git 本体安装检测（切换账号功能依赖 git 命令）
+  useEffect(() => {
+    let active = true;
+    gitAccountApi
+      .getGitStatus()
+      .then((version) => {
+        if (active) setGitVersion(version);
+      })
+      .catch(() => {
+        if (active) setGitVersion(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (addOpen) {
@@ -204,6 +223,21 @@ export function GitAccountsPage({
     }
   };
 
+  const handleOpenTerminal = async (account: GitAccount) => {
+    const path = account.projectPath.trim();
+    if (!path) return;
+    try {
+      await gitAccountApi.openTerminal(path);
+    } catch (error) {
+      toast.error(
+        t("gitAccount.openTerminalFailed", {
+          defaultValue: "打开终端失败",
+        }),
+        { description: String(error) },
+      );
+    }
+  };
+
   const renderAccount = ({ platform, account }: AccountWithPlatform) => {
     const active = account.id === currentId;
     return (
@@ -234,9 +268,9 @@ export function GitAccountsPage({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium">
-              {account.name ||
+              {account.title ||
                 t("gitAccount.defaultAccount", {
-                  defaultValue: "默认账号",
+                  defaultValue: "未命名账号",
                 })}
             </span>
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -250,10 +284,11 @@ export function GitAccountsPage({
             )}
           </div>
           <p className="truncate text-xs text-muted-foreground">
-            {account.email ||
-              t("gitAccount.emptyEmailHint", {
-                defaultValue: "未填写，点击编辑补全用户名和邮箱",
-              })}
+            {account.email
+              ? `${account.name} · ${account.email}`
+              : t("gitAccount.emptyEmailHint", {
+                  defaultValue: "未填写，点击编辑补全用户名和邮箱",
+                })}
           </p>
           {account.projectPath && (
             <p className="flex items-center gap-1 truncate text-xs text-muted-foreground/80">
@@ -276,6 +311,26 @@ export function GitAccountsPage({
               ? t("gitAccount.inUse", { defaultValue: "使用中" })
               : t("gitAccount.use", { defaultValue: "使用" })}
           </Button>
+          {account.projectPath.trim() && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("gitAccount.openTerminal", {
+                defaultValue: "打开工作区终端",
+              })}
+              title={t("gitAccount.openTerminalTitle", {
+                path: account.projectPath,
+                defaultValue: "在项目路径打开终端：{{path}}",
+              })}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleOpenTerminal(account);
+              }}
+            >
+              <SquareTerminal className="h-4 w-4" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -306,6 +361,68 @@ export function GitAccountsPage({
 
   return (
     <div className="space-y-5 p-4 pt-6">
+      {gitVersion === null && (
+        <div className="flex flex-col gap-3 rounded-xl border border-orange-500/30 bg-orange-500/10 p-4 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-orange-700 dark:text-orange-300">
+              {t("gitAccount.gitMissingTitle", {
+                defaultValue: "未检测到 Git",
+              })}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t("gitAccount.gitMissingHint", {
+                defaultValue:
+                  "账号切换需要 git 命令。选择一个来源下载安装后，重开应用即可检测到。",
+              })}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              className="gap-1.5"
+              onClick={() =>
+                void settingsApi.openExternal(
+                  "https://registry.npmmirror.com/binary.html?path=git-for-windows/",
+                )
+              }
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t("gitAccount.gitDownloadCN", { defaultValue: "国内镜像下载" })}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() =>
+                void settingsApi.openExternal(
+                  "https://git-scm.com/download/win",
+                )
+              }
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t("gitAccount.gitDownloadOfficial", {
+                defaultValue: "官方源下载",
+              })}
+            </Button>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center justify-end">
+        <Button
+          onClick={() => {
+            setEditingId(null);
+            setDraft(emptyDraft());
+            setDraftPlatform("gitee");
+            setDialogOpen(true);
+          }}
+          size="icon"
+          className="bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8"
+          aria-label={t("gitAccount.addGitUser", { defaultValue: "添加 Git 用户" })}
+          title={t("gitAccount.addGitUser", { defaultValue: "添加 Git 用户" })}
+        >
+          <Plus className="w-5 h-5" />
+        </Button>
+      </div>
       {loading ? (
         <p className="py-10 text-center text-sm text-muted-foreground">...</p>
       ) : items.length === 0 ? (
@@ -341,151 +458,174 @@ export function GitAccountsPage({
         onCancel={() => setDeleteTarget(null)}
       />
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader className="border-b-0 bg-transparent px-7 pb-2 pt-6">
-            <DialogTitle>
-              {editingId
-                ? t("gitAccount.editAccount", { defaultValue: "编辑 Git 用户" })
-                : t("gitAccount.addGitUser", {
-                    defaultValue: "添加 Git 用户",
-                  })}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-6 px-7 py-5">
-            <div className="space-y-2">
-              <p className="text-center text-sm text-muted-foreground">
-                {t("gitAccount.choosePlatform", {
-                  defaultValue: "保存到哪个平台？",
-                })}
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                {(["gitee", "github"] as GitPlatform[]).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => setDraftPlatform(option)}
+      <FullScreenPanel
+        isOpen={dialogOpen}
+        title={
+          editingId
+            ? t("gitAccount.editAccount", { defaultValue: "编辑 Git 用户" })
+            : t("gitAccount.addGitUser", { defaultValue: "添加 Git 用户" })
+        }
+        onClose={() => setDialogOpen(false)}
+        contentClassName="pt-4"
+        footer={
+          <Button type="submit" form="git-account-form">
+            <Save className="mr-2 h-4 w-4" />
+            {t("common.save", { defaultValue: "保存" })}
+          </Button>
+        }
+      >
+        <form
+          id="git-account-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleSave();
+          }}
+          className="glass mx-auto max-w-2xl space-y-6 rounded-xl border border-white/10 p-6"
+        >
+          <div className="space-y-2">
+            <p className="text-center text-sm text-muted-foreground">
+              {t("gitAccount.choosePlatform", {
+                defaultValue: "保存到哪个平台？",
+              })}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {(["gitee", "github"] as GitPlatform[]).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setDraftPlatform(option)}
+                  className={cn(
+                    "flex flex-col items-center gap-2 rounded-xl border-2 px-3 py-4 transition-all",
+                    draftPlatform === option
+                      ? "border-teal-500/60 bg-teal-500/10 shadow-sm"
+                      : "border-muted bg-muted/30 hover:border-muted-foreground/30 hover:bg-muted/50",
+                  )}
+                >
+                  <GitPlatformIcon platform={option} size={36} />
+                  <span
                     className={cn(
-                      "flex flex-col items-center gap-2 rounded-xl border-2 px-3 py-4 transition-all",
+                      "text-sm font-medium",
                       draftPlatform === option
-                        ? "border-teal-500/60 bg-teal-500/10 shadow-sm"
-                        : "border-muted bg-muted/30 hover:border-muted-foreground/30 hover:bg-muted/50",
+                        ? "text-foreground"
+                        : "text-muted-foreground",
                     )}
                   >
-                    <GitPlatformIcon platform={option} size={36} />
-                    <span
-                      className={cn(
-                        "text-sm font-medium",
-                        draftPlatform === option
-                          ? "text-foreground"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      {GIT_PLATFORM_LABEL[option]}
+                    {GIT_PLATFORM_LABEL[option]}
+                  </span>
+                  {draftPlatform === option && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-teal-500/15 px-2 py-0.5 text-[11px] text-teal-600 dark:text-teal-300">
+                      <Check className="h-3 w-3" />
+                      {t("gitAccount.selected", { defaultValue: "已选择" })}
                     </span>
-                    {draftPlatform === option && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-teal-500/15 px-2 py-0.5 text-[11px] text-teal-600 dark:text-teal-300">
-                        <Check className="h-3 w-3" />
-                        {t("gitAccount.selected", { defaultValue: "已选择" })}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
+                  )}
+                </button>
+              ))}
             </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label
-                  className="block text-sm font-medium text-foreground"
-                  htmlFor="git-draft-name"
-                >
-                  {t("gitAccount.userName", {
-                    defaultValue: "用户名（user.name）",
-                  })}
-                </label>
-                <Input
-                  id="git-draft-name"
-                  value={draft.name}
-                  onChange={(event) =>
-                    setDraft({ ...draft, name: event.target.value })
-                  }
-                  placeholder="your-name"
-                />
-              </div>
-              <div className="space-y-2">
-                <label
-                  className="block text-sm font-medium text-foreground"
-                  htmlFor="git-draft-email"
-                >
-                  {t("gitAccount.email", {
-                    defaultValue: "邮箱（user.email）",
-                  })}
-                </label>
-                <Input
-                  id="git-draft-email"
-                  type="email"
-                  value={draft.email}
-                  onChange={(event) =>
-                    setDraft({ ...draft, email: event.target.value })
-                  }
-                  placeholder="you@example.com"
-                />
-              </div>
-            </div>
-            <ApiKeyInput
-              id="git-draft-password"
-              label={t("gitAccount.password", {
-                defaultValue: "密码（选填，仅本地保存）",
+          </div>
+          <div className="space-y-2">
+            <label
+              className="block text-sm font-medium text-foreground"
+              htmlFor="git-draft-title"
+            >
+              {t("gitAccount.titleField", {
+                defaultValue: "名称（如：工作号 / 开源项目）",
               })}
-              value={draft.password}
-              onChange={(password) => setDraft({ ...draft, password })}
+            </label>
+            <Input
+              id="git-draft-title"
+              value={draft.title}
+              onChange={(event) =>
+                setDraft({ ...draft, title: event.target.value })
+              }
+              placeholder={t("gitAccount.titlePlaceholder", {
+                defaultValue: "给这个账号起个好认的名字",
+              })}
             />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label
                 className="block text-sm font-medium text-foreground"
-                htmlFor="git-draft-project"
+                htmlFor="git-draft-name"
               >
-                {t("gitAccount.projectPath", {
-                  defaultValue: "项目本地路径（选填）",
+                {t("gitAccount.userName", {
+                  defaultValue: "用户名（user.name）",
                 })}
               </label>
-              <div className="flex gap-2">
-                <Input
-                  id="git-draft-project"
-                  value={draft.projectPath}
-                  onChange={(event) =>
-                    setDraft({ ...draft, projectPath: event.target.value })
-                  }
-                  placeholder="D:/projects/my-repo"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="shrink-0"
-                  onClick={() => {
-                    void settingsApi
-                      .pickDirectory(draft.projectPath || undefined)
-                      .then((dir) => {
-                        if (dir) setDraft((d) => ({ ...d, projectPath: dir }));
-                      });
-                  }}
-                >
-                  <FolderSearch className="mr-1 h-4 w-4" />
-                  {t("gitAccount.browse", { defaultValue: "浏览" })}
-                </Button>
-              </div>
+              <Input
+                id="git-draft-name"
+                value={draft.name}
+                onChange={(event) =>
+                  setDraft({ ...draft, name: event.target.value })
+                }
+                placeholder="your-name"
+              />
+            </div>
+            <div className="space-y-2">
+              <label
+                className="block text-sm font-medium text-foreground"
+                htmlFor="git-draft-email"
+              >
+                {t("gitAccount.email", {
+                  defaultValue: "邮箱（user.email）",
+                })}
+              </label>
+              <Input
+                id="git-draft-email"
+                type="email"
+                value={draft.email}
+                onChange={(event) =>
+                  setDraft({ ...draft, email: event.target.value })
+                }
+                placeholder="you@example.com"
+              />
             </div>
           </div>
-          <DialogFooter className="border-t-0 bg-transparent px-7 pb-6 pt-1">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              {t("common.cancel", { defaultValue: "取消" })}
-            </Button>
-            <Button onClick={() => void handleSave()}>
-              {t("common.save", { defaultValue: "保存" })}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <ApiKeyInput
+            id="git-draft-password"
+            label={t("gitAccount.password", {
+              defaultValue: "密码（选填，仅本地保存）",
+            })}
+            value={draft.password}
+            onChange={(password) => setDraft({ ...draft, password })}
+          />
+          <div className="space-y-2">
+            <label
+              className="block text-sm font-medium text-foreground"
+              htmlFor="git-draft-project"
+            >
+              {t("gitAccount.projectPath", {
+                defaultValue: "项目本地路径（选填）",
+              })}
+            </label>
+            <div className="flex gap-2">
+              <Input
+                id="git-draft-project"
+                value={draft.projectPath}
+                onChange={(event) =>
+                  setDraft({ ...draft, projectPath: event.target.value })
+                }
+                placeholder="D:/projects/my-repo"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => {
+                  void settingsApi
+                    .pickDirectory(draft.projectPath || undefined)
+                    .then((dir) => {
+                      if (dir) setDraft((d) => ({ ...d, projectPath: dir }));
+                    });
+                }}
+              >
+                <FolderSearch className="mr-1 h-4 w-4" />
+                {t("gitAccount.browse", { defaultValue: "浏览" })}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </FullScreenPanel>
     </div>
   );
 }

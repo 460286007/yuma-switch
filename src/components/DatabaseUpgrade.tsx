@@ -41,7 +41,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "dbUpgrade.description",
-                "当前数据库由更新版本的 Yuma Switch 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
+                "当前数据库由更新版本的 Yuma Study 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
               )}
             </p>
             {dbVersion != null && supportedVersion != null && (
@@ -72,7 +72,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
           <p className="leading-relaxed">
             {t("dbUpgrade.manualHint", {
               defaultValue:
-                "请到发布页下载并安装更新版本的 Yuma Switch 后重试；如需保留现场，可先打开配置目录备份数据库文件。",
+                "请到发布页下载并安装更新版本的 Yuma Study 后重试；如需保留现场，可先打开配置目录备份数据库文件。",
             })}
           </p>
         </div>

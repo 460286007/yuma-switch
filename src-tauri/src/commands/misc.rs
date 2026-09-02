@@ -1017,7 +1017,7 @@ const NOT_INSTALLED: &str = "not installed or not executable";
 /// 关键区分"没装"与"装了但 `--version` 自身报错退出"（如工具要求更高的 Node 版本）：
 /// 后者必须如实上报、不去别处捞旧版掩盖，否则"升级到新版却跑不起来"会被旧版盖住，
 /// 表现为"升级成功但版本号不变"。
-enum ShellProbe {
+pub(crate) enum ShellProbe {
     /// 成功拿到版本号
     Found(String),
     /// 可执行存在、但 `--version` 非零退出（携带诊断信息，如 stderr 末尾若干行）
@@ -1955,7 +1955,7 @@ fn run_windows_tool_version_command(
 /// not runnable), which is reported as-is without falling back, so an old
 /// install elsewhere cannot mask a broken default.
 #[cfg(target_os = "windows")]
-fn probe_path_default_version(tool: &str) -> ShellProbe {
+pub(crate) fn probe_path_default_version(tool: &str) -> ShellProbe {
     let path_default = match resolve_path_default(tool, None) {
         Ok(Some(p)) => p,
         _ => return ShellProbe::NotFound(NOT_INSTALLED.to_string()),
@@ -3814,6 +3814,135 @@ fn launch_terminal_with_env(
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     Err("不支持的操作系统".to_string())
+}
+
+/// 检测本机 Git 是否可用，返回版本号（如 "2.50.1.windows.1"）；未安装返回 None。
+#[tauri::command]
+pub async fn get_git_status() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(match probe_path_default_version("git") {
+            ShellProbe::Found(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let out = std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        })
+    }
+}
+
+/// 在指定目录直接打开用户首选终端（不执行任何命令）。
+///
+/// Git 账号列表的「打开工作区终端」等入口使用：目录先经
+/// [`resolve_launch_cwd`] 校验（存在、是文件夹、canonicalize、UNC 处理），
+/// 再按平台拉起首选终端并把工作目录切过去。
+#[tauri::command]
+pub async fn open_terminal_at_directory(cwd: String) -> Result<bool, String> {
+    let dir = resolve_launch_cwd(Some(cwd))?.ok_or_else(|| "未提供终端工作目录".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        launch_windows_terminal_at(&dir).map_err(|e| format!("启动终端失败: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        launch_macos_terminal_at(&dir).map_err(|e| format!("启动终端失败: {e}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        launch_linux_terminal_at(&dir).map_err(|e| format!("启动终端失败: {e}"))?;
+    }
+
+    Ok(true)
+}
+
+/// Windows：写一个只做 `cd /d`（UNC 路径自动 `pushd`）+ 自清理的临时批处理，
+/// 用首选终端（wt / powershell / cmd）打开并执行；首选失败回退 cmd。
+/// 与 [`launch_windows_terminal`] 相同的拉起机制，只是不注入 claude 命令。
+#[cfg(target_os = "windows")]
+fn launch_windows_terminal_at(dir: &Path) -> Result<(), String> {
+    let preferred = crate::settings::get_preferred_terminal();
+    let terminal = preferred.as_deref().unwrap_or("cmd");
+
+    let temp_dir = std::env::temp_dir();
+    let bat_file = temp_dir.join(format!("cc_switch_open_dir_{}.bat", std::process::id()));
+    // build_windows_cwd_command_str 已做批处理转义并以 CRLF 结尾
+    let cwd_command = build_windows_cwd_command(Some(dir));
+    let content = format!("@echo off\r\n{cwd_command}del \"%~f0\" >nul 2>&1\r\n");
+    std::fs::write(&bat_file, &content).map_err(|e| format!("写入批处理文件失败: {e}"))?;
+
+    let bat_path = bat_file.to_string_lossy();
+    let ps_cmd = format!("& '{}'", bat_path);
+
+    let result = match terminal {
+        "powershell" => run_windows_start_command(
+            &["powershell", "-NoExit", "-Command", &ps_cmd],
+            "PowerShell",
+        ),
+        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path], "Windows Terminal"),
+        _ => run_windows_start_command(&["cmd", "/K", &bat_path], "cmd"),
+    };
+
+    if result.is_err() && terminal != "cmd" {
+        log::warn!(
+            "首选终端 {} 启动失败，回退到 cmd: {:?}",
+            terminal,
+            result.as_ref().err()
+        );
+        return run_windows_start_command(&["cmd", "/K", &bat_path], "cmd");
+    }
+
+    result
+}
+
+/// macOS：让系统在指定目录打开 Terminal.app（`open -a Terminal <dir>`）。
+#[cfg(target_os = "macos")]
+fn launch_macos_terminal_at(dir: &Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("-a")
+        .arg("Terminal")
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动 Terminal 失败: {e}"))
+}
+
+/// Linux：依次尝试常见终端的 working-directory 参数，第一个拉起成功者胜出。
+#[cfg(target_os = "linux")]
+fn launch_linux_terminal_at(dir: &Path) -> Result<(), String> {
+    use std::process::Command;
+
+    // (可执行名, 工作目录参数)；目录路径作为该参数的值追加
+    let candidates: &[(&str, &str)] = &[
+        ("x-terminal-emulator", "--working-directory"),
+        ("gnome-terminal", "--working-directory"),
+        ("konsole", "--workdir"),
+        ("xfce4-terminal", "--working-directory"),
+        ("kitty", "--directory"),
+        ("alacritty", "--working-directory"),
+    ];
+
+    let mut last_err = String::from("未找到可用的终端程序");
+    for (program, flag) in candidates {
+        match Command::new(program).arg(flag).arg(dir).spawn() {
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => last_err = format!("{program}: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 /// 写入 claude 配置文件

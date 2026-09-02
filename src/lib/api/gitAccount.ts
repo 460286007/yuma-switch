@@ -5,6 +5,8 @@ export type GitPlatform = "gitee" | "github";
 
 export interface GitAccount {
   id: string;
+  /** 条目显示名称（如"工作号"），不参与 git 配置 */
+  title: string;
   name: string;
   email: string;
   password: string;
@@ -45,6 +47,16 @@ export const gitAccountApi = {
     id: string,
   ): Promise<GitSwitchResult> {
     return await invoke("switch_git_account", { platform, id });
+  },
+
+  /** 在账号的项目路径（工作区）打开用户首选终端 */
+  async openTerminal(cwd: string): Promise<boolean> {
+    return await invoke("open_terminal_at_directory", { cwd });
+  },
+
+  /** 检测本机 Git 是否可用（返回版本号，未安装返回 null） */
+  async getGitStatus(): Promise<string | null> {
+    return await invoke("get_git_status");
   },
 };
 

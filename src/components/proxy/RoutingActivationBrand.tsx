@@ -122,7 +122,7 @@ export function RoutingActivationBrand({
             : { duration: 0.28, ease: [0.22, 1, 0.36, 1] }
         }
       >
-        Yuma Switch
+        Yuma Study
       </motion.a>
 
       {showBurst && (

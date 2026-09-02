@@ -133,12 +133,20 @@ vi.mock("@/components/ConfirmDialog", () => ({
 }));
 
 vi.mock("@/components/AppSwitcher", () => ({
-  AppSwitcher: ({ activeApp, onSwitch }: any) => (
+  AppSwitcher: ({ activeApp, onToggle }: any) => (
     <div data-testid="app-switcher">
       <span>{activeApp}</span>
-      <button onClick={() => onSwitch("claude")}>switch-claude</button>
-      <button onClick={() => onSwitch("codex")}>switch-codex</button>
-      <button onClick={() => onSwitch("openclaw")}>switch-openclaw</button>
+      <button onClick={() => onToggle()}>open-apps-page</button>
+    </div>
+  ),
+}));
+
+vi.mock("@/components/AppsPage", () => ({
+  AppsPage: ({ onSelect }: any) => (
+    <div data-testid="apps-page">
+      <button onClick={() => onSelect("claude")}>switch-claude</button>
+      <button onClick={() => onSelect("codex")}>switch-codex</button>
+      <button onClick={() => onSelect("openclaw")}>switch-openclaw</button>
     </div>
   ),
 }));
@@ -212,7 +220,8 @@ describe("App integration with MSW", () => {
       ),
     );
 
-    fireEvent.click(screen.getByText("switch-codex"));
+    fireEvent.click(screen.getByText("open-apps-page"));
+    fireEvent.click(await screen.findByText("switch-codex"));
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
         "codex-1",
@@ -323,7 +332,8 @@ describe("App integration with MSW", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    fireEvent.click(screen.getByText("switch-openclaw"));
+    fireEvent.click(screen.getByText("open-apps-page"));
+    fireEvent.click(await screen.findByText("switch-openclaw"));
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
@@ -414,7 +424,8 @@ describe("App integration with MSW", () => {
     const { default: App } = await import("@/App");
     renderApp(App);
 
-    fireEvent.click(screen.getByText("switch-openclaw"));
+    fireEvent.click(screen.getByText("open-apps-page"));
+    fireEvent.click(await screen.findByText("switch-openclaw"));
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(

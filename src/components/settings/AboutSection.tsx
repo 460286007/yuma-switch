@@ -664,9 +664,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           <div className="flex items-center gap-8">
             <div className="flex flex-col items-center gap-2">
               <div className="flex items-center gap-2">
-                <img src={appIcon} alt="Yuma Switch" className="h-5 w-5" />
+                <img src={appIcon} alt="Yuma Study" className="h-5 w-5" />
                 <h4 className="text-lg font-semibold text-foreground">
-                  Yuma Switch
+                  Yuma Study
                 </h4>
               </div>
               <div className="flex items-center gap-2">

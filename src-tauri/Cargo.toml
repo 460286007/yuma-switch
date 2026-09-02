@@ -1,7 +1,7 @@
 [package]
-name = "yuma-switch"
-version = "3.20.0"
-description = "Yuma Switch - All-in-One Assistant for Claude Code, Codex & Gemini CLI"
+name = "yuma-study"
+version = "1.0.1"
+description = "Yuma Study - All-in-One Assistant for Claude Code, Codex & Gemini CLI"
 authors = ["Jason Young"]
 license = "MIT"
 repository = "https://github.com/farion1231/cc-switch"
@@ -38,7 +38,7 @@ tauri-plugin-window-state = "2"
 dirs = "5.0"
 toml = "0.8"
 toml_edit = "0.22"
-reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "socks"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "socks", "blocking"] }
 arboard = "3.6"
 flate2 = "1"
 brotli = "7"

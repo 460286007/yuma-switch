@@ -2,7 +2,7 @@ use crate::error::AppError;
 use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 
 /// 获取 macOS 上的 .app bundle 路径
-/// 将 `/path/to/Yuma Switch.app/Contents/MacOS/Yuma Switch` 转换为 `/path/to/Yuma Switch.app`
+/// 将 `/path/to/Yuma Study.app/Contents/MacOS/Yuma Study` 转换为 `/path/to/Yuma Study.app`
 #[cfg(target_os = "macos")]
 fn get_macos_app_bundle_path(exe_path: &std::path::Path) -> Option<std::path::PathBuf> {
     let path_str = exe_path.to_string_lossy();
@@ -17,7 +17,7 @@ fn get_macos_app_bundle_path(exe_path: &std::path::Path) -> Option<std::path::Pa
 
 /// 初始化 AutoLaunch 实例
 fn get_auto_launch() -> Result<AutoLaunch, AppError> {
-    let app_name = "Yuma Switch";
+    let app_name = "Yuma Study";
     let exe_path =
         std::env::current_exe().map_err(|e| AppError::Message(format!("无法获取应用路径: {e}")))?;
 
@@ -70,8 +70,8 @@ pub fn is_auto_launch_enabled() -> Result<bool, AppError> {
 
 /// 构建指定名称的 AutoLaunch 实例（用于清理旧版残留条目）
 fn get_auto_launch_named(app_name: &str) -> Result<AutoLaunch, AppError> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| AppError::Message(format!("无法获取应用路径: {e}")))?;
+    let exe_path =
+        std::env::current_exe().map_err(|e| AppError::Message(format!("无法获取应用路径: {e}")))?;
     AutoLaunchBuilder::new()
         .set_app_name(app_name)
         .set_app_path(&exe_path.to_string_lossy())
@@ -101,11 +101,12 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn test_get_macos_app_bundle_path_valid() {
-        let exe_path = std::path::Path::new("/Applications/Yuma Switch.app/Contents/MacOS/Yuma Switch");
+        let exe_path =
+            std::path::Path::new("/Applications/Yuma Study.app/Contents/MacOS/Yuma Study");
         let result = get_macos_app_bundle_path(exe_path);
         assert_eq!(
             result,
-            Some(std::path::PathBuf::from("/Applications/Yuma Switch.app"))
+            Some(std::path::PathBuf::from("/Applications/Yuma Study.app"))
         );
     }
 
@@ -113,12 +114,12 @@ mod tests {
     #[test]
     fn test_get_macos_app_bundle_path_with_spaces() {
         let exe_path =
-            std::path::Path::new("/Users/test/My Apps/Yuma Switch.app/Contents/MacOS/Yuma Switch");
+            std::path::Path::new("/Users/test/My Apps/Yuma Study.app/Contents/MacOS/Yuma Study");
         let result = get_macos_app_bundle_path(exe_path);
         assert_eq!(
             result,
             Some(std::path::PathBuf::from(
-                "/Users/test/My Apps/Yuma Switch.app"
+                "/Users/test/My Apps/Yuma Study.app"
             ))
         );
     }

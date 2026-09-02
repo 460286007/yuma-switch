@@ -348,6 +348,9 @@ pub struct CodexOfficialHistoryUnifyMigration {
 pub struct GitAccount {
     #[serde(default)]
     pub id: String,
+    /// 条目显示名称（用户自定义，如"工作号"），不参与 git 配置
+    #[serde(default)]
+    pub title: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]

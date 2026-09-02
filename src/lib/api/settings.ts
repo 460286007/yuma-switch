@@ -247,7 +247,7 @@ export const settingsApi = {
 
   async runToolLifecycleAction(
     tools: string[],
-    action: "install",
+    action: "install" | "update",
     wslShellByTool?: Record<
       string,
       { wslShell?: string | null; wslShellFlag?: string | null }

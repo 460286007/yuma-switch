@@ -4289,6 +4289,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -7538,8 +7539,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "yuma-switch"
-version = "3.20.0"
+name = "yuma-study"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "arboard",

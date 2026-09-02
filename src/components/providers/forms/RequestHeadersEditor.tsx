@@ -172,7 +172,7 @@ export function RequestHeadersEditor({
                     defaultValue: "Value",
                   })}
                   placeholder={t("opencode.headerValuePlaceholder", {
-                    defaultValue: "Yuma Switch",
+                    defaultValue: "Yuma Study",
                   })}
                   className="min-w-0 flex-1"
                 />
