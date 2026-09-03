@@ -1635,6 +1635,10 @@ pub fn run() {
             commands::harness_get_api_key,
             commands::harness_list_keys,
             commands::harness_delete_key,
+            commands::dsh_list_providers,
+            commands::dsh_save_provider,
+            commands::dsh_delete_provider,
+            commands::dsh_enable_provider,
             // Universal Provider management
             commands::get_universal_providers,
             commands::get_universal_provider,

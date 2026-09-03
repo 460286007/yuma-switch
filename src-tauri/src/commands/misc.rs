@@ -3894,16 +3894,9 @@ pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
         }
     };
 
-    // 首次启动：安装依赖（pnpm 共享全局 store，重复安装走硬链接）
-    if !harness.join("node_modules").exists() {
-        let dir = harness.clone();
-        let install_path = run_path.clone();
-        tokio::task::spawn_blocking(move || run_pnpm_install(&dir, &install_path))
-            .await
-            .map_err(|e| format!("安装任务异常: {e}"))??;
-    }
-
-    // 常驻后台启动 dsh web（完全无窗口：DETACHED+NO_WINDOW；PID 落盘供 harness_stop）
+    // 后台脚本：依赖缺失则现场安装，然后常驻运行 dsh web。
+    // 安装/启动全部脱离命令线程——命令立即返回 "starting"，
+    // 由看门狗任务轮询端口，就绪后自动打开浏览器（不再有"超时就不开"的缺口）。
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
@@ -3911,11 +3904,12 @@ pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
         let temp = std::env::temp_dir();
         let cmd_file = temp.join("yuma_dsh_web.cmd");
         let log_file = temp.join("yuma-dsh-web.log");
-        let harness_str = escape_windows_batch_value(&harness.to_string_lossy());
-        let log_str = escape_windows_batch_value(&log_file.to_string_lossy());
-        let path_str = escape_windows_batch_value(&run_path);
+        // 注意：值位于 set "..." 的双引号内，() 无需转义（转义反而产生 ^ 污染）
         let content = format!(
-            "@echo off\r\nset \"PATH={path_str};%PATH%\"\r\ncd /d \"{harness_str}\"\r\npnpm dsh web --no-open >> \"{log_str}\" 2>&1\r\n"
+            "@echo off\r\nset \"PATH={run_path};%PATH%\"\r\ncd /d \"{}\"\r\nif not exist node_modules call pnpm install --prefer-offline >> \"{}\" 2>&1\r\npnpm dsh web --no-open >> \"{}\" 2>&1\r\n",
+            harness.display(),
+            log_file.display(),
+            log_file.display(),
         );
         std::fs::write(&cmd_file, &content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
         let mut cmd = Command::new("cmd");
@@ -3930,29 +3924,35 @@ pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
     {
         let log = std::env::temp_dir().join("yuma-dsh-web.log");
         let log_display = log.display();
+        let harness_display = harness.display();
         std::process::Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "cd '{}' && pnpm dsh web --no-open >> '{}' 2>&1 &",
-                harness.display(),
-                log_display
+                "cd '{harness_display}' && {{ pnpm install --prefer-offline; pnpm dsh web --no-open; }} >> '{log_display}' 2>&1 &"
             ))
-            .env("PATH", &search_path)
+            .env("PATH", &run_path)
             .spawn()
             .map_err(|e| format!("启动 dsh web 失败: {e}"))?;
     }
 
-    // 等端口就绪（首次 tsx 冷启动较慢，最多等 3 分钟）
-    for _ in 0..90 {
-        if dsh_port_open() {
-            app.opener()
-                .open_url("http://127.0.0.1:3080", None::<String>)
-                .map_err(|e| format!("打开浏览器失败: {e}"))?;
-            return Ok("started".to_string());
+    // 看门狗：最多 10 分钟，端口就绪即开浏览器（首次冷启动+装依赖足够）
+    tokio::spawn(async move {
+        for _ in 0..300 {
+            if dsh_port_open() {
+                if let Err(e) = app
+                    .opener()
+                    .open_url("http://127.0.0.1:3080", None::<String>)
+                {
+                    log::warn!("打开 DSH 浏览器失败: {e}");
+                }
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-    Err("dsh web 启动超时（3 分钟内端口未就绪），可查看日志 %TEMP%\\yuma-dsh-web.log".to_string())
+        log::warn!("DSH 启动看门狗 10 分钟内端口未就绪，日志见 %TEMP%/yuma-dsh-web.log");
+    });
+
+    Ok("starting".to_string())
 }
 
 // ── DeepSeek Harness 状态 / 停止 / 钥匙管理 ──────────────────
@@ -4406,6 +4406,436 @@ fn delete_credential(key: &str) -> Result<bool, String> {
     }
     std::fs::write(&path, out).map_err(|e| format!("写入失败: {e}"))?;
     Ok(true)
+}
+
+// ── DSH 供应商（provider）管理：Claude 供应商页同款体验 ─────────
+// settings.yaml 的 llm-pi-ai.providers.<id> 存 baseURL/apiKeyEnv/models；
+// agent-default-model.provider 标记启用项。钥匙本体在 .credentials.yaml。
+// 官网链接等元数据存 sidecar（~/.dsh/.yuma-providers.json），不污染 dsh 配置。
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshProvider {
+    pub id: String,
+    pub base_url: String,
+    pub api: String,
+    pub official_url: Option<String>,
+    pub key_env: String,
+    pub key_masked: Option<String>,
+    pub model_ids: Vec<String>,
+    pub active: bool,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshModelInput {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DshProviderInput {
+    /// 编辑时携带；新增为 None
+    pub id: Option<String>,
+    pub name: String,
+    pub base_url: String,
+    pub official_url: Option<String>,
+    /// 编辑且留空表示不修改已存钥匙
+    pub api_key: Option<String>,
+    pub models: Vec<DshModelInput>,
+}
+
+fn dsh_settings_path() -> Option<std::path::PathBuf> {
+    dsh_home().map(|h| h.join("settings.yaml"))
+}
+
+fn dsh_meta_path() -> Option<std::path::PathBuf> {
+    dsh_home().map(|h| h.join(".yuma-providers.json"))
+}
+
+fn read_dsh_meta() -> serde_json::Value {
+    dsh_meta_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_dsh_meta(meta: &serde_json::Value) -> Result<(), String> {
+    let path = dsh_meta_path().ok_or("无法定位 ~/.dsh")?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let s = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    std::fs::write(&path, s).map_err(|e| format!("写入元数据失败: {e}"))
+}
+
+fn load_dsh_settings() -> Result<serde_yaml::Mapping, String> {
+    let path = dsh_settings_path().ok_or("无法定位 ~/.dsh")?;
+    if !path.exists() {
+        return Err("DSH 尚未初始化（先启动一次 DSH 生成 settings.yaml）".to_string());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(&content).map_err(|e| format!("解析 settings.yaml 失败: {e}"))?;
+    Ok(value.as_mapping().cloned().unwrap_or_default())
+}
+
+fn save_dsh_settings(root: &serde_yaml::Mapping) -> Result<(), String> {
+    let path = dsh_settings_path().ok_or("无法定位 ~/.dsh")?;
+    let s = serde_yaml::to_string(root).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, s).map_err(|e| format!("写入 settings.yaml 失败: {e}"))
+}
+
+/// 取（或创建）llm-pi-ai.providers 映射的引用路径工具
+fn providers_mapping_mut<'a>(
+    root: &'a mut serde_yaml::Mapping,
+) -> &'a mut serde_yaml::Mapping {
+    use serde_yaml::Value as Y;
+    let empty_map = Y::Mapping(Default::default());
+    let llm = root
+        .entry(Y::String("llm-pi-ai".into()))
+        .or_insert(empty_map);
+    if !llm.is_mapping() {
+        *llm = Y::Mapping(Default::default());
+    }
+    let llm_map = llm.as_mapping_mut().unwrap();
+    let empty2 = Y::Mapping(Default::default());
+    let providers = llm_map
+        .entry(Y::String("providers".into()))
+        .or_insert(empty2);
+    if !providers.is_mapping() {
+        *providers = Y::Mapping(Default::default());
+    }
+    providers.as_mapping_mut().unwrap()
+}
+
+fn current_default_provider(root: &serde_yaml::Mapping) -> Option<String> {
+    root.get("agent-default-model")?
+        .as_mapping()?
+        .get("provider")?
+        .as_str()
+        .map(String::from)
+}
+
+fn slugify(name: &str) -> String {
+    let mut s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() {
+        "custom".to_string()
+    } else {
+        s.chars().take(32).collect()
+    }
+}
+
+/// 列出全部 DSH 供应商（含启用状态与脱敏钥匙）。
+#[tauri::command]
+pub async fn dsh_list_providers() -> Result<Vec<DshProvider>, String> {
+    tokio::task::spawn_blocking(|| {
+        let root = load_dsh_settings()?;
+        let meta = read_dsh_meta();
+        let active = current_default_provider(&root).unwrap_or_default();
+        let mut out = Vec::new();
+        if let Some(providers) = root
+            .get("llm-pi-ai")
+            .and_then(|v| v.get("providers"))
+            .and_then(|v| v.as_mapping())
+        {
+            for (k, v) in providers {
+                let Some(id) = k.as_str() else { continue };
+                let m = match v.as_mapping() {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let key_env = m
+                    .get("apiKeyEnv")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let model_ids = m
+                    .get("models")
+                    .and_then(|x| x.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|mv| {
+                                mv.as_mapping()
+                                    .and_then(|mm| mm.get("id"))
+                                    .and_then(|x| x.as_str())
+                                    .map(String::from)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.push(DshProvider {
+                    id: id.to_string(),
+                    base_url: m
+                        .get("baseURL")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    api: m
+                        .get("api")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("anthropic-messages")
+                        .to_string(),
+                    official_url: meta
+                        .get(id)
+                        .and_then(|x| x.get("officialUrl"))
+                        .and_then(|x| x.as_str())
+                        .map(String::from),
+                    key_masked: read_credential(&key_env).as_deref().map(mask_key),
+                    key_env,
+                    model_ids,
+                    active: id == active,
+                });
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 新增/编辑供应商：写 settings.yaml + 钥匙 + sidecar 元数据。返回供应商 id。
+#[tauri::command]
+pub async fn dsh_save_provider(input: DshProviderInput) -> Result<String, String> {
+    if input.base_url.trim().is_empty() {
+        return Err("请求地址不能为空".to_string());
+    }
+    if input.models.is_empty() {
+        return Err("至少需要一个模型（ presets 默认自带）".to_string());
+    }
+    let key: Option<String> = input
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string);
+    if input.id.is_none() && key.is_none() {
+        return Err("API Key 不能为空".to_string());
+    }
+    tokio::task::spawn_blocking(move || {
+        use serde_yaml::Value as Y;
+        let mut root = load_dsh_settings()?;
+
+        // id：编辑沿用；新增按名称生成且不与现有冲突
+        let providers = providers_mapping_mut(&mut root);
+        let existing: Vec<String> = providers
+            .keys()
+            .filter_map(|k| k.as_str().map(String::from))
+            .collect();
+        let id = match input.id.as_deref() {
+            Some(id) => id.to_string(),
+            None => {
+                let base = slugify(&input.name);
+                let mut candidate = base.clone();
+                let mut n = 2;
+                while existing.contains(&candidate) {
+                    candidate = format!("{base}-{n}");
+                    n += 1;
+                }
+                candidate
+            }
+        };
+
+        let key_env = format!(
+            "DSH_{}_KEY",
+            id.to_uppercase().replace(['-', '.'], "_")
+        );
+
+        // 组装 provider 节点（编辑时保留 models 之外已有键）
+        let mut node = serde_yaml::Mapping::new();
+        if let Some(old) = providers.get(Y::String(id.clone())) {
+            if let Some(old_map) = old.as_mapping() {
+                for (ok, ov) in old_map {
+                    if ok.as_str() == Some("models") {
+                        continue;
+                    }
+                    node.insert(ok.clone(), ov.clone());
+                }
+            }
+        }
+        node.insert(
+            Y::String("apiKeyEnv".into()),
+            Y::String(key_env.clone()),
+        );
+        node.insert(
+            Y::String("api".into()),
+            Y::String("anthropic-messages".into()),
+        );
+        node.insert(
+            Y::String("baseURL".into()),
+            Y::String(input.base_url.trim().to_string()),
+        );
+        let mut models = Vec::new();
+        for m in &input.models {
+            let glm_like = m.id.starts_with("glm");
+            let mut mm = serde_yaml::Mapping::new();
+            mm.insert(Y::String("id".into()), Y::String(m.id.clone()));
+            mm.insert(Y::String("name".into()), Y::String(m.name.clone()));
+            mm.insert(
+                Y::String("contextWindow".into()),
+                Y::Number(if glm_like { 1048576 } else { 128000 }.into()),
+            );
+            mm.insert(
+                Y::String("maxTokens".into()),
+                Y::Number(if glm_like { 131072 } else { 8192 }.into()),
+            );
+            if glm_like {
+                let mut efforts = serde_yaml::Mapping::new();
+                efforts.insert(Y::String("off".into()), Y::Null);
+                efforts.insert(Y::String("low".into()), Y::String("low".into()));
+                efforts.insert(Y::String("high".into()), Y::String("high".into()));
+                efforts.insert(Y::String("max".into()), Y::String("max".into()));
+                mm.insert(Y::String("reasoningEfforts".into()), Y::Mapping(efforts));
+            }
+            models.push(Y::Mapping(mm));
+        }
+        node.insert(Y::String("models".into()), Y::Sequence(models));
+        providers.insert(Y::String(id.clone()), Y::Mapping(node));
+
+        save_dsh_settings(&root)?;
+
+        // 钥匙
+        if let Some(k) = key {
+            write_credential(&key_env, &k)?;
+        }
+
+        // sidecar 元数据（官网链接）
+        let mut meta = read_dsh_meta();
+        if !meta.is_object() {
+            meta = serde_json::json!({});
+        }
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert(
+                id.clone(),
+                serde_json::json!({ "officialUrl": input.official_url }),
+            );
+        }
+        write_dsh_meta(&meta)?;
+
+        Ok(id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 删除供应商（同时清钥匙与元数据；是当前启用项时一并清掉 default 指向）。
+#[tauri::command]
+pub async fn dsh_delete_provider(id: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        use serde_yaml::Value as Y;
+        let mut root = load_dsh_settings()?;
+        let providers = providers_mapping_mut(&mut root);
+        let removed = providers
+            .remove(Y::String(id.clone()))
+            .is_some();
+        if !removed {
+            return Err(format!("供应商 {id} 不存在"));
+        }
+        // 若是启用项 → 清除 default 指向（避免悬空引用）
+        if current_default_provider(&root).as_deref() == Some(id.as_str()) {
+            if let Some(def) = root
+                .get_mut("agent-default-model")
+                .and_then(|v| v.as_mapping_mut())
+            {
+                def.remove(Y::String("provider".into()));
+            }
+        }
+        save_dsh_settings(&root)?;
+        let _ = delete_credential(&format!(
+            "DSH_{}_KEY",
+            id.to_uppercase().replace(['-', '.'], "_")
+        ));
+        let mut meta = read_dsh_meta();
+        if let Some(obj) = meta.as_object_mut() {
+            obj.remove(&id);
+            let _ = write_dsh_meta(&meta);
+        }
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 启用供应商：agent-default-model.provider = id（模型不匹配时取其第一个模型）。
+#[tauri::command]
+pub async fn dsh_enable_provider(id: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        use serde_yaml::Value as Y;
+        let mut root = load_dsh_settings()?;
+        let provider = root
+            .get("llm-pi-ai")
+            .and_then(|v| v.get("providers"))
+            .and_then(|v| v.as_mapping())
+            .and_then(|m| m.get(Y::String(id.clone())))
+            .ok_or_else(|| format!("供应商 {id} 不存在"))?
+            .clone();
+        let first_model = provider
+            .as_mapping()
+            .and_then(|m| m.get("models"))
+            .and_then(|v| v.as_sequence())
+            .and_then(|s| s.first())
+            .and_then(|m| m.as_mapping())
+            .and_then(|m| m.get("id"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let empty_map = Y::Mapping(Default::default());
+        let def = root
+            .entry(Y::String("agent-default-model".into()))
+            .or_insert(empty_map);
+        if !def.is_mapping() {
+            *def = Y::Mapping(Default::default());
+        }
+        let def_map = def.as_mapping_mut().unwrap();
+        def_map.insert(Y::String("provider".into()), Y::String(id.clone()));
+        if let Some(model) = first_model {
+            let current_model = def_map
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let provider_models: Vec<String> = provider
+                .as_mapping()
+                .and_then(|m| m.get("models"))
+                .and_then(|v| v.as_sequence())
+                .map(|s| {
+                    s.iter()
+                        .filter_map(|m| {
+                            m.as_mapping()
+                                .and_then(|mm| mm.get("id"))
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if current_model
+                .as_deref()
+                .is_none_or(|cm| !provider_models.iter().any(|pm| pm == cm))
+            {
+                def_map.insert(Y::String("model".into()), Y::String(model));
+            }
+        }
+        save_dsh_settings(&root)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// dsh（DeepSeek Harness）的工具卡版本：harness/package.json 版本 +
