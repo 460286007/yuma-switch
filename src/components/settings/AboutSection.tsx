@@ -13,6 +13,7 @@ import {
   AlertCircle,
   ChevronDown,
   Stethoscope,
+  Rocket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -61,6 +62,7 @@ const TOOL_NAMES = [
   "openclaw",
   "hermes",
   "pi",
+  "dsh",
 ] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 type ToolLifecycleAction = "install";
@@ -166,9 +168,11 @@ const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
   pi: "Pi",
+  dsh: "DeepSeek Harness",
 };
 
-const TOOL_APP_IDS: Record<ToolName, AppId> = {
+// dsh（DeepSeek Harness）不是供应商应用，无 AppId → Partial
+const TOOL_APP_IDS: Partial<Record<ToolName, AppId>> = {
   claude: "claude",
   codex: "codex",
   gemini: "gemini",
@@ -769,7 +773,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         <div className="grid gap-3 px-1 sm:grid-cols-2 xl:grid-cols-3">
           {TOOL_NAMES.map((toolName, index) => {
             const tool = toolVersionByName.get(toolName);
-            const appConfig = APP_ICON_MAP[TOOL_APP_IDS[toolName]];
+            const appConfig = TOOL_APP_IDS[toolName]
+              ? APP_ICON_MAP[TOOL_APP_IDS[toolName]!]
+              : undefined;
             const displayName = TOOL_DISPLAY_NAMES[toolName];
             // 单卡片 loading 用「结果是否已到」而非「整批是否结束」驱动，实现渐进式刷新：
             //   - loadingTools[t]：本工具探测在途（首次加载或单工具刷新）；
@@ -783,12 +789,15 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             // "装了跑不起来"误判成"未安装"而给出无用的安装按钮（重装同一版本解决不了）。
             const installedButBroken = Boolean(tool?.installed_but_broken);
             // loading 和 broken 都没有可执行动作；未安装才提供安装。
+            // dsh（DeepSeek Harness）随应用内置、不走 npm 安装链，永不给安装按钮。
             const action: ToolLifecycleAction | null =
-              isToolVersionLoading || installedButBroken
+              toolName === "dsh"
                 ? null
-                : !tool?.version
-                  ? "install"
-                  : null;
+                : isToolVersionLoading || installedButBroken
+                  ? null
+                  : !tool?.version
+                    ? "install"
+                    : null;
             const runningAction = toolActions[toolName];
             const title = tool?.version || tool?.error || t("common.unknown");
             const conflicts = toolDiagnostics[toolName];
@@ -804,7 +813,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-background/80 text-muted-foreground">
-                      {appConfig?.icon ?? <Terminal className="h-4 w-4" />}
+                      {toolName === "dsh" ? (
+                        <Rocket className="h-4 w-4 text-[#5FA04E]" />
+                      ) : (
+                        (appConfig?.icon ?? <Terminal className="h-4 w-4" />)
+                      )}
                     </span>
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium">

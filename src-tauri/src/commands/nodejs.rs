@@ -192,6 +192,11 @@ fn node_version_of(exe: &str, search_path: &str) -> Option<String> {
     }
 }
 
+/// 用指定搜索 PATH 探测 node 版本（供 harness 状态检测等复用）。
+pub(crate) fn detect_node_version_with_path(search_path: &str) -> Option<String> {
+    node_version_of("node", search_path)
+}
+
 fn detect_node() -> NodeStatus {
     let search_path = refreshed_search_path();
     // 1) 首选 PATH 中的 node（合并注册表里的最新 PATH）

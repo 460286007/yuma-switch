@@ -97,8 +97,8 @@ pub struct ToolVersion {
     wsl_distro: Option<String>,
 }
 
-const VALID_TOOLS: [&str; 8] = [
-    "claude", "codex", "gemini", "grok", "opencode", "openclaw", "hermes", "pi",
+const VALID_TOOLS: [&str; 9] = [
+    "claude", "codex", "gemini", "grok", "opencode", "openclaw", "hermes", "pi", "dsh",
 ];
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -741,6 +741,12 @@ async fn get_single_tool_version_impl(
         VALID_TOOLS.contains(&tool),
         "unexpected tool name in get_single_tool_version_impl: {tool}"
     );
+
+    // dsh 不走 PATH 探测：版本来自内置 harness/package.json，
+    // 就绪状态 = 源码 + node_modules + 本机 Node 环境。
+    if tool == "dsh" {
+        return dsh_tool_version().await;
+    }
 
     // 判断该工具的运行环境 & WSL distro（如有）
     let (env_type, wsl_distro) = tool_env_type_and_wsl_distro(tool);
@@ -3889,12 +3895,13 @@ pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
             .map_err(|e| format!("安装任务异常: {e}"))??;
     }
 
-    // 常驻启动 dsh web（Windows：最小化控制台 + 日志文件；Unix：nohup 后台）
+    // 常驻后台启动 dsh web（完全无窗口：DETACHED+NO_WINDOW；PID 落盘供 harness_stop）
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
+        const DETACHED_PROCESS: u32 = 0x00000008;
         let temp = std::env::temp_dir();
-        let cmd_file = temp.join(format!("yuma_dsh_web_{}.cmd", std::process::id()));
+        let cmd_file = temp.join("yuma_dsh_web.cmd");
         let log_file = temp.join("yuma-dsh-web.log");
         let harness_str = escape_windows_batch_value(&harness.to_string_lossy());
         let log_str = escape_windows_batch_value(&log_file.to_string_lossy());
@@ -3904,11 +3911,12 @@ pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
         );
         std::fs::write(&cmd_file, &content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
         let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "DSH Web", "/MIN", "cmd", "/C"])
-            .arg(&cmd_file);
-        cmd.creation_flags(CREATE_NO_WINDOW)
+        cmd.args(["/C"]).arg(&cmd_file);
+        let child = cmd
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("启动 dsh web 失败: {e}"))?;
+        let _ = std::fs::write(temp.join("yuma-dsh.pid"), child.id().to_string());
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -3937,6 +3945,273 @@ pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
     Err("dsh web 启动超时（3 分钟内端口未就绪），可查看日志 %TEMP%\\yuma-dsh-web.log".to_string())
+}
+
+// ── DeepSeek Harness 状态 / 停止 / 钥匙管理 ──────────────────
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessStatus {
+    /// 内置 harness 目录（含源码）存在
+    pub installed: bool,
+    /// node_modules 就绪（可直接启动）
+    pub ready: bool,
+    /// harness 版本（package.json）
+    pub version: Option<String>,
+    /// dsh web 是否在运行（端口 3080）
+    pub running: bool,
+    /// 本机 node 版本（None = 未检测到）
+    pub node_version: Option<String>,
+    /// API 钥匙是否已配置
+    pub api_key_set: bool,
+    /// 脱敏钥匙（如 sk-1****XYZ）
+    pub api_key_masked: Option<String>,
+}
+
+fn dsh_home() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".dsh"))
+}
+
+/// dsh 的托管钥匙库：$DSH_HOME/.credentials.yaml（扁平 KEY→值 映射，
+/// dsh 的 Models 页写入的也是这里；chokidar 监听热生效）。
+fn dsh_credentials_path() -> Option<std::path::PathBuf> {
+    dsh_home().map(|h| h.join(".credentials.yaml"))
+}
+
+fn mask_key(key: &str) -> String {
+    let k = key.trim();
+    if k.len() <= 8 {
+        "****".to_string()
+    } else {
+        format!("{}****{}", &k[..4], &k[k.len() - 4..])
+    }
+}
+
+/// 行级读取 .credentials.yaml 中某个 KEY 的值（保留注释/格式的扁平映射）。
+fn read_credential(key: &str) -> Option<String> {
+    let path = dsh_credentials_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("{key}:");
+    for line in content.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            let v = rest.trim().trim_matches('"').trim_matches('\'').trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 行级写入（只 patch 自己的 key，其余行原样保留；不存在则追加）。
+fn write_credential(key: &str, value: &str) -> Result<(), String> {
+    let path = dsh_credentials_path().ok_or("无法定位用户主目录")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建 ~/.dsh 失败: {e}"))?;
+    }
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefix = format!("{key}:");
+    let new_line = format!("{key}: {value}");
+    let mut replaced = false;
+    let mut out_lines: Vec<String> = Vec::new();
+    for line in content.lines() {
+        if line.trim().starts_with(&prefix) {
+            out_lines.push(new_line.clone());
+            replaced = true;
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        if !out_lines.is_empty() && !content.ends_with('\n') {
+            // 保留原结尾缺换行的情况，先补
+        }
+        out_lines.push(new_line);
+    }
+    let mut out = out_lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    std::fs::write(&path, out).map_err(|e| format!("写入钥匙失败: {e}"))?;
+    Ok(())
+}
+
+/// 查询 harness 完整状态（供前端开关/工具卡使用）
+#[tauri::command]
+pub async fn harness_status() -> Result<HarnessStatus, String> {
+    tokio::task::spawn_blocking(detect_harness_status)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn detect_harness_status() -> HarnessStatus {
+    let harness = locate_harness_dir();
+    let installed = harness.is_some();
+    let ready = harness
+        .as_ref()
+        .map(|h| h.join("node_modules").exists())
+        .unwrap_or(false);
+    let version = harness.as_ref().and_then(|h| {
+        std::fs::read_to_string(h.join("package.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("version").and_then(|x| x.as_str()).map(String::from))
+    });
+    let running = dsh_port_open();
+    let node_version = {
+        let sp = crate::commands::nodejs::refreshed_search_path();
+        #[cfg(target_os = "windows")]
+        {
+            crate::commands::nodejs::detect_node_version_with_path(&sp)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("node")
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        }
+    };
+    let key = read_credential("DEEPSEEK_API_KEY");
+    HarnessStatus {
+        installed,
+        ready,
+        version,
+        running,
+        node_version,
+        api_key_set: key.is_some(),
+        api_key_masked: key.as_deref().map(mask_key),
+    }
+}
+
+/// 停止后台 dsh web（优先 PID 文件杀进程树；兜底按端口找 PID）。
+#[tauri::command]
+pub async fn harness_stop() -> Result<bool, String> {
+    let stopped = tokio::task::spawn_blocking(stop_dsh_web)
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(stopped)
+}
+
+fn stop_dsh_web() -> Result<bool, String> {
+    if !dsh_port_open() {
+        // 已停：清理过期 PID 文件
+        let _ = std::fs::remove_file(std::env::temp_dir().join("yuma-dsh.pid"));
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        // 1) PID 文件（本应用启动的实例）
+        let pid_file = std::env::temp_dir().join("yuma-dsh.pid");
+        if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                let out = Command::new("taskkill")
+                    .args(["/PID", pid, "/T", "/F"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+                    .map_err(|e| format!("taskkill 执行失败: {e}"))?;
+                if out.status.success() {
+                    let _ = std::fs::remove_file(&pid_file);
+                    return Ok(true);
+                }
+            }
+        }
+        // 2) 兜底：netstat 按端口找监听 PID
+        let out = Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("netstat 执行失败: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if line.contains("127.0.0.1:3080") && line.trim().ends_with("LISTENING") {
+                if let Some(pid) = line.split_whitespace().last() {
+                    if pid.chars().all(|c| c.is_ascii_digit()) {
+                        let kill = Command::new("taskkill")
+                            .args(["/PID", pid, "/T", "/F"])
+                            .creation_flags(CREATE_NO_WINDOW)
+                            .output()
+                            .map_err(|e| format!("taskkill 执行失败: {e}"))?;
+                        if kill.status.success() {
+                            let _ = std::fs::remove_file(&pid_file);
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+        Err("未能停止 dsh web（未找到监听进程）".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("pkill -f 'dsh.*web' 2>/dev/null; pkill -f 'apps/cli/src/bin.ts' 2>/dev/null; true")
+            .output()
+            .map_err(|e| format!("pkill 失败: {e}"))?;
+        let _ = out;
+        Ok(true)
+    }
+}
+
+/// 写入/更新 harness 的 DeepSeek API 钥匙（$DSH_HOME/.credentials.yaml，
+/// 即刻热生效，dsh Models 页可见「已存储」状态）。
+#[tauri::command]
+pub async fn harness_set_api_key(apiKey: String) -> Result<String, String> {
+    let key = apiKey.trim().to_string();
+    if key.is_empty() {
+        return Err("钥匙不能为空".to_string());
+    }
+    if !key.chars().all(|c| (0x21..=0x7e).contains(&(c as u32))) {
+        return Err("钥匙包含非法字符（仅接受可打印 ASCII）".to_string());
+    }
+    let masked = mask_key(&key);
+    tokio::task::spawn_blocking(move || write_credential("DEEPSEEK_API_KEY", &key))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(masked)
+}
+
+/// 读取当前钥匙（脱敏显示）
+#[tauri::command]
+pub async fn harness_get_api_key() -> Result<Option<String>, String> {
+    Ok(read_credential("DEEPSEEK_API_KEY").as_deref().map(mask_key))
+}
+
+/// dsh（DeepSeek Harness）的工具卡版本：harness/package.json 版本 +
+/// 就绪状态（源码在、依赖已装、Node 可用）。缺 Node 时标记为
+/// installed_but_broken 并在 error 里说明——满足"自动检测本地 node 环境"。
+async fn dsh_tool_version() -> ToolVersion {
+    let status = detect_harness_status();
+    let (env_type, wsl_distro) = tool_env_type_and_wsl_distro("dsh");
+    let error = if !status.installed {
+        Some("未找到内置 harness 目录".to_string())
+    } else if status.node_version.is_none() {
+        Some("未检测到 Node.js（启动需要 Node ≥ 20，可在顶栏 Node 入口安装）".to_string())
+    } else if !status.ready {
+        Some("依赖未安装（首次启动会自动 pnpm install）".to_string())
+    } else {
+        None
+    };
+    ToolVersion {
+        name: "dsh".to_string(),
+        version: status.version.clone(),
+        latest_version: status.version.clone(),
+        error,
+        // 有版本且无错误才算完整就绪；缺 Node / 缺依赖按"装了但跑不起来"展示
+        installed_but_broken: status.installed
+            && status.version.is_some()
+            && (status.node_version.is_none() || !status.ready),
+        env_type,
+        wsl_distro,
+    }
 }
 
 #[cfg(target_os = "windows")]

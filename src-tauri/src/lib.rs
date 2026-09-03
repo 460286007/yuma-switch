@@ -1628,6 +1628,10 @@ pub fn run() {
             commands::open_terminal_at_directory,
             commands::get_git_status,
             commands::launch_deepseek_harness,
+            commands::harness_status,
+            commands::harness_stop,
+            commands::harness_set_api_key,
+            commands::harness_get_api_key,
             // Universal Provider management
             commands::get_universal_providers,
             commands::get_universal_provider,
