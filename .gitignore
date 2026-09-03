@@ -48,3 +48,4 @@ flatpak-repo/
 nul
 mainWindow.js
 harness/.zcode/
+harness-dist/
