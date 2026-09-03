@@ -3826,28 +3826,36 @@ fn launch_terminal_with_env(
 // harness/ 目录随项目分发（不含 node_modules）；`pnpm dsh web` 直接以 tsx 跑
 // 源码，无需构建。首次启动先 pnpm install（pnpm 全局 store 硬链接，很快）。
 
-/// 定位内置 harness 目录：依次探测 exe 同级/上级（repo 的 target/release 布局
-/// 与安装目录布局）与进程工作目录下的 harness/，以 apps/cli/src/bin.ts 为标志。
+/// 定位内置 harness 目录：依次探测 exe 同级/向上各级（repo 的 target/release
+/// 布局深达 4 层）、进程工作目录、YUMA_HARNESS_DIR 环境变量覆盖、
+/// 以及本机仓库的固定位置（安装版 exe 不随包分发 harness 时的兜底），
+/// 以 apps/cli/src/bin.ts 为标志。
 fn locate_harness_dir() -> Option<std::path::PathBuf> {
     let marker = ["apps", "cli", "src", "bin.ts"];
+    let has_marker = |c: &std::path::Path| marker.iter().fold(c.to_path_buf(), |p, m| p.join(m)).exists();
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent()?.to_path_buf();
-        for _ in 0..3 {
-            candidates.push(dir.join("harness"));
-            if let Some(parent) = dir.parent() {
-                dir = parent.to_path_buf();
-            } else {
-                break;
+        if let Some(mut dir) = exe.parent().map(|p| p.to_path_buf()) {
+            for _ in 0..6 {
+                candidates.push(dir.join("harness"));
+                match dir.parent() {
+                    Some(parent) => dir = parent.to_path_buf(),
+                    None => break,
+                }
             }
         }
+    }
+    if let Some(root) = std::env::var_os("YUMA_HARNESS_DIR") {
+        candidates.push(std::path::PathBuf::from(root));
     }
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("harness"));
     }
-    candidates
-        .into_iter()
-        .find(|c| marker.iter().fold(c.clone(), |p, m| p.join(m)).exists())
+    // 安装版兜底：开发仓库在本机的固定位置（个人构建约定）
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Desktop").join("cc-switch-main").join("harness"));
+    }
+    candidates.into_iter().find(|c| has_marker(c))
 }
 
 fn dsh_port_open() -> bool {
