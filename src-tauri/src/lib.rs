@@ -1633,6 +1633,8 @@ pub fn run() {
             commands::harness_deploy,
             commands::harness_set_api_key,
             commands::harness_get_api_key,
+            commands::harness_list_keys,
+            commands::harness_delete_key,
             // Universal Provider management
             commands::get_universal_providers,
             commands::get_universal_provider,

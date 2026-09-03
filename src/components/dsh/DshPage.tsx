@@ -11,6 +11,7 @@ import {
   PackageCheck,
   Power,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +27,11 @@ interface HarnessStatus {
   pnpmVersion: string | null;
   apiKeySet: boolean;
   apiKeyMasked: string | null;
+}
+
+interface HarnessKeyEntry {
+  name: string;
+  masked: string;
 }
 
 interface DshPageProps {
@@ -44,11 +50,20 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
   const [status, setStatus] = useState<HarnessStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // refresh | deploy | toggle
   const [apiKey, setApiKey] = useState("");
+  // 多钥匙管理（页面底部）
+  const [keys, setKeys] = useState<HarnessKeyEntry[]>([]);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyValue, setNewKeyValue] = useState("");
 
   const refresh = useCallback(async () => {
     setBusy((b) => b ?? "refresh");
     try {
-      setStatus(await invoke<HarnessStatus>("harness_status"));
+      const [s, k] = await Promise.all([
+        invoke<HarnessStatus>("harness_status"),
+        invoke<HarnessKeyEntry[]>("harness_list_keys").catch(() => []),
+      ]);
+      setStatus(s);
+      setKeys(k);
     } catch {
       setStatus(null);
     } finally {
@@ -121,6 +136,43 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
       await refresh();
     } catch (error) {
       toast.error(t("dsh.keySaveFailed", { defaultValue: "保存钥匙失败" }), {
+        description: String(error),
+      });
+    }
+  };
+
+  const addNamedKey = async () => {
+    const name = newKeyName.trim();
+    const value = newKeyValue.trim();
+    if (!name || !value) return;
+    try {
+      const masked = await invoke<string>("harness_set_api_key", {
+        apiKey: value,
+        name,
+      });
+      toast.success(
+        t("dsh.keyAdded", { defaultValue: "钥匙已添加" }),
+        { description: `${name} = ${masked}` },
+      );
+      setNewKeyName("");
+      setNewKeyValue("");
+      await refresh();
+    } catch (error) {
+      toast.error(t("dsh.keyAddFailed", { defaultValue: "添加钥匙失败" }), {
+        description: String(error),
+      });
+    }
+  };
+
+  const deleteKey = async (name: string) => {
+    try {
+      await invoke<boolean>("harness_delete_key", { name });
+      toast.success(
+        t("dsh.keyDeleted", { defaultValue: "已删除" }) + ` ${name}`,
+      );
+      await refresh();
+    } catch (error) {
+      toast.error(t("dsh.keyDeleteFailed", { defaultValue: "删除失败" }), {
         description: String(error),
       });
     }
@@ -309,6 +361,78 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
             {status?.running
               ? t("dsh.stop", { defaultValue: "一键关闭" })
               : t("dsh.start", { defaultValue: "开启 DSH" })}
+          </Button>
+        </div>
+      </div>
+
+      {/* 最底部：多钥匙管理 */}
+      <div className="glass-card space-y-3 rounded-xl p-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">
+            {t("dsh.keysSection", { defaultValue: "钥匙管理（多把）" })}
+          </h3>
+          <span className="text-[11px] text-muted-foreground">
+            {keys.length}
+          </span>
+        </div>
+
+        {keys.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            {t("dsh.keysEmpty", {
+              defaultValue: "还没有已存的钥匙。dsh settings.yaml 里 provider 的 apiKeyEnv 引用哪个名字，对应钥匙就会生效。",
+            })}
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {keys.map((k) => (
+              <div
+                key={k.name}
+                className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 py-2"
+              >
+                <span className="shrink-0 font-mono text-xs font-medium">
+                  {k.name}
+                </span>
+                <span className="flex-1 truncate font-mono text-xs text-muted-foreground">
+                  {k.masked}
+                </span>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                  aria-label={`${t("common.delete", { defaultValue: "删除" })} ${k.name}`}
+                  onClick={() => void deleteKey(k.name)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 添加表单（最底下） */}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            value={newKeyName}
+            onChange={(e) => setNewKeyName(e.target.value)}
+            placeholder={t("dsh.keyNamePlaceholder", {
+              defaultValue: "钥匙名（如 DEEPSEEK_API_KEY_2）",
+            })}
+            className="font-mono sm:w-64"
+          />
+          <Input
+            type="password"
+            value={newKeyValue}
+            onChange={(e) => setNewKeyValue(e.target.value)}
+            placeholder="sk-..."
+            className="flex-1 font-mono"
+          />
+          <Button
+            className="shrink-0"
+            disabled={!newKeyName.trim() || !newKeyValue.trim()}
+            onClick={() => void addNamedKey()}
+          >
+            {t("dsh.addKey", { defaultValue: "添加钥匙" })}
           </Button>
         </div>
       </div>

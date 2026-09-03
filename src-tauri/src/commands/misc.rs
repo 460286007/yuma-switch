@@ -4280,10 +4280,15 @@ fn stop_dsh_web() -> Result<bool, String> {
     }
 }
 
-/// 写入/更新 harness 的 DeepSeek API 钥匙（$DSH_HOME/.credentials.yaml，
+/// 写入/更新 harness 的 API 钥匙（$DSH_HOME/.credentials.yaml，
 /// 即刻热生效，dsh Models 页可见「已存储」状态）。
+/// name 缺省为 DEEPSEEK_API_KEY；可传任意大写环境变量名管理多把钥匙
+///（settings.yaml 里 provider 的 apiKeyEnv 引用哪个名字，哪把就生效）。
 #[tauri::command]
-pub async fn harness_set_api_key(apiKey: String) -> Result<String, String> {
+pub async fn harness_set_api_key(
+    apiKey: String,
+    name: Option<String>,
+) -> Result<String, String> {
     let key = apiKey.trim().to_string();
     if key.is_empty() {
         return Err("钥匙不能为空".to_string());
@@ -4291,8 +4296,10 @@ pub async fn harness_set_api_key(apiKey: String) -> Result<String, String> {
     if !key.chars().all(|c| (0x21..=0x7e).contains(&(c as u32))) {
         return Err("钥匙包含非法字符（仅接受可打印 ASCII）".to_string());
     }
+    let key_name = normalize_credential_name(name.as_deref())?;
     let masked = mask_key(&key);
-    tokio::task::spawn_blocking(move || write_credential("DEEPSEEK_API_KEY", &key))
+    let key_name_cl = key_name.clone();
+    tokio::task::spawn_blocking(move || write_credential(&key_name_cl, &key))
         .await
         .map_err(|e| e.to_string())??;
     Ok(masked)
@@ -4302,6 +4309,103 @@ pub async fn harness_set_api_key(apiKey: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn harness_get_api_key() -> Result<Option<String>, String> {
     Ok(read_credential("DEEPSEEK_API_KEY").as_deref().map(mask_key))
+}
+
+/// 列出全部已存钥匙（名称 + 脱敏值），按文件顺序。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessKeyEntry {
+    pub name: String,
+    pub masked: String,
+}
+
+#[tauri::command]
+pub async fn harness_list_keys() -> Result<Vec<HarnessKeyEntry>, String> {
+    #[cfg(target_os = "windows")]
+    let read = || -> Vec<HarnessKeyEntry> {
+        let Some(path) = dsh_credentials_path() else {
+            return Vec::new();
+        };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        content
+            .lines()
+            .filter_map(|line| {
+                let t = line.trim();
+                if t.is_empty() || t.starts_with('#') {
+                    return None;
+                }
+                let (name, value) = t.split_once(':')?;
+                let name = name.trim();
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                if name.is_empty() || value.is_empty() {
+                    return None;
+                }
+                Some(HarnessKeyEntry {
+                    name: name.to_string(),
+                    masked: mask_key(value),
+                })
+            })
+            .collect()
+    };
+    #[cfg(not(target_os = "windows"))]
+    let read = || -> Vec<HarnessKeyEntry> { Vec::new() };
+    let _ = &read;
+    Ok(read())
+}
+
+/// 删除指定名称的钥匙（找不到时返回 Err）。
+#[tauri::command]
+pub async fn harness_delete_key(name: String) -> Result<bool, String> {
+    let key_name = normalize_credential_name(Some(&name))?;
+    tokio::task::spawn_blocking(move || delete_credential(&key_name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 钥匙名约束：与 dsh 的 CredentialRef 语法一致（POSIX 环境变量名）。
+fn normalize_credential_name(name: Option<&str>) -> Result<String, String> {
+    let n = name.unwrap_or("DEEPSEEK_API_KEY").trim();
+    if n.is_empty() {
+        return Ok("DEEPSEEK_API_KEY".to_string());
+    }
+    let valid = n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return Err(
+            "钥匙名只能是字母/数字/下划线，且以字母或下划线开头（环境变量名规则，如 DEEPSEEK_API_KEY_2）"
+                .to_string(),
+        );
+    }
+    Ok(n.to_ascii_uppercase())
+}
+
+fn delete_credential(key: &str) -> Result<bool, String> {
+    let path = dsh_credentials_path().ok_or("无法定位用户主目录")?;
+    if !path.exists() {
+        return Err("钥匙文件不存在".to_string());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let prefix = format!("{key}:");
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut removed = false;
+    for line in content.lines() {
+        if line.trim().starts_with(&prefix) {
+            removed = true;
+            continue;
+        }
+        out_lines.push(line.to_string());
+    }
+    if !removed {
+        return Err(format!("未找到钥匙 {key}"));
+    }
+    let mut out = out_lines.join("\n");
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    std::fs::write(&path, out).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(true)
 }
 
 /// dsh（DeepSeek Harness）的工具卡版本：harness/package.json 版本 +
