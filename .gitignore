@@ -47,3 +47,4 @@ flatpak-build/
 flatpak-repo/
 nul
 mainWindow.js
+harness/.zcode/
