@@ -9,6 +9,7 @@ import {
   KeyRound,
   Loader2,
   PackageCheck,
+  Plus,
   Power,
   RefreshCw,
   Trash2,
@@ -49,7 +50,6 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<HarnessStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // refresh | deploy | toggle
-  const [apiKey, setApiKey] = useState("");
   // 多钥匙管理（页面底部）
   const [keys, setKeys] = useState<HarnessKeyEntry[]>([]);
   const [newKeyName, setNewKeyName] = useState("");
@@ -121,26 +121,6 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
     }
   };
 
-  const saveKey = async () => {
-    const key = apiKey.trim();
-    if (!key) return;
-    try {
-      const masked = await invoke<string>("harness_set_api_key", {
-        apiKey: key,
-      });
-      toast.success(
-        t("dsh.keySaved", { defaultValue: "钥匙已保存，DSH 即刻生效" }),
-        { description: masked },
-      );
-      setApiKey("");
-      await refresh();
-    } catch (error) {
-      toast.error(t("dsh.keySaveFailed", { defaultValue: "保存钥匙失败" }), {
-        description: String(error),
-      });
-    }
-  };
-
   const addNamedKey = async () => {
     const name = newKeyName.trim();
     const value = newKeyValue.trim();
@@ -185,51 +165,6 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
 
   return (
     <div className="space-y-5 p-4 pt-6">
-      {/* 顶部：钥匙配置 */}
-      <div className="glass-card space-y-3 rounded-xl p-4">
-        <div className="flex items-center gap-2">
-          <KeyRound
-            className={cn(
-              "h-4 w-4",
-              status?.apiKeySet
-                ? "text-emerald-500"
-                : "text-orange-500",
-            )}
-          />
-          <h3 className="text-sm font-semibold">
-            {t("dsh.keySection", { defaultValue: "API 钥匙配置" })}
-          </h3>
-          {status?.apiKeySet && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {t("dsh.keyCurrent", { defaultValue: "已配置" })}{" "}
-              <span className="font-mono">{status.apiKeyMasked}</span>
-            </span>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <Input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="DEEPSEEK_API_KEY (sk-...)"
-            className="font-mono"
-          />
-          <Button
-            className="shrink-0"
-            disabled={apiKey.trim().length === 0}
-            onClick={() => void saveKey()}
-          >
-            {t("common.save", { defaultValue: "保存" })}
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t("dsh.keyHint", {
-            defaultValue:
-              "主钥匙即刻写入 DSH 并热生效；DSH Web 内的 Models 设置页还提供更多供应商与钥匙方案。",
-          })}
-        </p>
-      </div>
-
       {/* 中部：环境检测 + 一键部署 */}
       <div className="glass-card space-y-3 rounded-xl p-4">
         <div className="flex items-center justify-between">
@@ -410,30 +345,61 @@ export function DshPage({ onGoToNodePage }: DshPageProps) {
           </div>
         )}
 
-        {/* 添加表单（最底下） */}
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            placeholder={t("dsh.keyNamePlaceholder", {
-              defaultValue: "钥匙名（如 DEEPSEEK_API_KEY_2）",
-            })}
-            className="font-mono sm:w-64"
-          />
-          <Input
-            type="password"
-            value={newKeyValue}
-            onChange={(e) => setNewKeyValue(e.target.value)}
-            placeholder="sk-..."
-            className="flex-1 font-mono"
-          />
-          <Button
-            className="shrink-0"
-            disabled={!newKeyName.trim() || !newKeyValue.trim()}
-            onClick={() => void addNamedKey()}
-          >
-            {t("dsh.addKey", { defaultValue: "添加钥匙" })}
-          </Button>
+        {/* 添加表单（最底下，ZCode 供应商表单风格：标签在上、字段纵排） */}
+        <div className="space-y-3 rounded-lg border border-border/60 bg-background/60 p-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label
+                className="text-xs font-medium text-muted-foreground"
+                htmlFor="dsh-new-key-name"
+              >
+                {t("dsh.keyNameLabel", { defaultValue: "钥匙名称" })}
+              </label>
+              <Input
+                id="dsh-new-key-name"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                placeholder="DEEPSEEK_API_KEY_2"
+                className="font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                {t("dsh.keyNameHint", {
+                  defaultValue: "环境变量名：字母/数字/下划线；dsh settings 的 apiKeyEnv 引用它",
+                })}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <label
+                className="text-xs font-medium text-muted-foreground"
+                htmlFor="dsh-new-key-value"
+              >
+                API Key
+              </label>
+              <Input
+                id="dsh-new-key-value"
+                type="password"
+                value={newKeyValue}
+                onChange={(e) => setNewKeyValue(e.target.value)}
+                placeholder="sk-..."
+                className="font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                {t("dsh.keyValueHint", {
+                  defaultValue: "仅保存在本机 ~/.dsh/.credentials.yaml，DSH 即刻热生效",
+                })}
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              disabled={!newKeyName.trim() || !newKeyValue.trim()}
+              onClick={() => void addNamedKey()}
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              {t("dsh.addKey", { defaultValue: "添加钥匙" })}
+            </Button>
+          </div>
         </div>
       </div>
     </div>
