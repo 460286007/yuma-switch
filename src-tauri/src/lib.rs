@@ -1630,6 +1630,7 @@ pub fn run() {
             commands::launch_deepseek_harness,
             commands::harness_status,
             commands::harness_stop,
+            commands::harness_deploy,
             commands::harness_set_api_key,
             commands::harness_get_api_key,
             // Universal Provider management

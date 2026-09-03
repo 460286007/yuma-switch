@@ -3970,6 +3970,8 @@ pub struct HarnessStatus {
     pub running: bool,
     /// 本机 node 版本（None = 未检测到）
     pub node_version: Option<String>,
+    /// 本机 pnpm 版本（None = 未检测到）
+    pub pnpm_version: Option<String>,
     /// API 钥匙是否已配置
     pub api_key_set: bool,
     /// 脱敏钥匙（如 sk-1****XYZ）
@@ -4084,15 +4086,121 @@ fn detect_harness_status() -> HarnessStatus {
         }
     };
     let key = read_credential("DEEPSEEK_API_KEY");
+    let pnpm_version = {
+        let sp = crate::commands::nodejs::refreshed_search_path();
+        #[cfg(target_os = "windows")]
+        {
+            let out = crate::commands::nodejs::command_no_window("pnpm.cmd")
+                .env("PATH", &sp)
+                .arg("-v")
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                }
+                _ => None,
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("pnpm")
+                .arg("-v")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        }
+    };
     HarnessStatus {
         installed,
         ready,
         version,
         running,
         node_version,
+        pnpm_version,
         api_key_set: key.is_some(),
         api_key_masked: key.as_deref().map(mask_key),
     }
+}
+
+/// 一键部署：Node 检查 → pnpm 检查（缺则 npm 全局安装）→ 安装 harness 依赖。
+/// 返回分阶段报告文案；任一阶段失败返回 Err。
+#[tauri::command]
+pub async fn harness_deploy() -> Result<String, String> {
+    let status = detect_harness_status();
+    if status.node_version.is_none() {
+        return Err("未检测到 Node.js：请先到顶栏 Node 页面安装（≥ 20），再回来一键部署".to_string());
+    }
+    let harness = locate_harness_dir()
+        .ok_or_else(|| "未找到内置 harness 目录（harness/apps/cli/src/bin.ts）".to_string())?;
+
+    let search_path = crate::commands::nodejs::refreshed_search_path();
+    let run_path = {
+        let pnpm_home = std::env::var("PNPM_HOME").unwrap_or_default();
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        if pnpm_home.is_empty() {
+            search_path.clone()
+        } else {
+            format!("{pnpm_home}{sep}{search_path}")
+        }
+    };
+
+    let mut report = String::new();
+
+    // pnpm 缺失 → 用随 Node 附带的 npm 全局安装
+    if status.pnpm_version.is_none() {
+        let path_env = run_path.clone();
+        let _installed = tokio::task::spawn_blocking(move || install_pnpm_globally(&path_env))
+            .await
+            .map_err(|e| e.to_string())??;
+        report.push_str("已自动安装 pnpm；");
+    } else {
+        report.push_str(&format!("pnpm {} 已就绪；", status.pnpm_version.unwrap()));
+    }
+
+    // 依赖安装（pnpm 全局 store，重复部署走硬链接很快）
+    let dir = harness.clone();
+    let install_path = run_path.clone();
+    tokio::task::spawn_blocking(move || run_pnpm_install(&dir, &install_path))
+        .await
+        .map_err(|e| e.to_string())??;
+    report.push_str("依赖安装完成。现在可以开启 DSH 了");
+
+    Ok(report)
+}
+
+/// npm i -g pnpm（静默）
+#[cfg(target_os = "windows")]
+fn install_pnpm_globally(path_env: &str) -> Result<(), String> {
+    use std::process::Command;
+    let out = Command::new("npm.cmd")
+        .args(["install", "-g", "pnpm"])
+        .env("PATH", path_env)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("执行 npm 失败（未找到 npm？）: {e}"))?;
+    if !out.status.success() {
+        let tail = decode_command_output(&out.stderr);
+        let lines: Vec<&str> = tail.lines().collect();
+        return Err(format!(
+            "pnpm 安装失败:\n{}",
+            lines[lines.len().saturating_sub(6)..].join("\n")
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn install_pnpm_globally(path_env: &str) -> Result<(), String> {
+    let status = std::process::Command::new("npm")
+        .args(["install", "-g", "pnpm"])
+        .env("PATH", path_env)
+        .status()
+        .map_err(|e| format!("执行 npm 失败: {e}"))?;
+    if !status.success() {
+        return Err("pnpm 安装失败".to_string());
+    }
+    Ok(())
 }
 
 /// 停止后台 dsh web（优先 PID 文件杀进程树；兜底按端口找 PID）。

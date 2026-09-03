@@ -25,7 +25,7 @@ pub struct NodeVersion {
 }
 
 /// GUI 进程里启动控制台子进程会闪黑窗，Windows 下统一加 CREATE_NO_WINDOW。
-fn command_no_window(program: &str) -> Command {
+pub(crate) fn command_no_window(program: &str) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]
     {

@@ -67,7 +67,8 @@ import { AppsPage } from "@/components/AppsPage";
 import { ToolManagementBar } from "@/components/providers/ToolManagementBar";
 import { GitPlatformSwitcher } from "@/components/GitPlatformSwitcher";
 import { NodeVersionSwitcher } from "@/components/NodeVersionSwitcher";
-import { HarnessLauncherButton } from "@/components/HarnessLauncherButton";
+import { DshViewButton } from "@/components/HarnessLauncherButton";
+import { DshPage } from "@/components/dsh/DshPage";
 import { NodeVersionsPage } from "@/components/node/NodeVersionsPage";
 import { GitAccountsPage } from "@/components/git/GitAccountsPage";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
@@ -191,11 +192,14 @@ function App() {
   const [gitViewOpen, setGitViewOpen] = useState(false);
   // Node.js 版本管理页（与 Git 页互斥）
   const [nodeViewOpen, setNodeViewOpen] = useState(false);
-  // 应用列表页（三个入口页互斥）
+  // DeepSeek Harness 管理页（与其它入口页互斥）
+  const [dshViewOpen, setDshViewOpen] = useState(false);
+  // 应用列表页（四个入口页互斥）
   const [appsViewOpen, setAppsViewOpen] = useState(false);
   const closeAllFeaturePages = useCallback(() => {
     setGitViewOpen(false);
     setNodeViewOpen(false);
+    setDshViewOpen(false);
     setAppsViewOpen(false);
   }, []);
   const [gitAddOpen, setGitAddOpen] = useState(false);
@@ -204,7 +208,7 @@ function App() {
   useEffect(() => {
     if (
       currentView !== "providers" &&
-      (gitViewOpen || nodeViewOpen || appsViewOpen)
+      (gitViewOpen || nodeViewOpen || dshViewOpen || appsViewOpen)
     ) {
       closeAllFeaturePages();
     }
@@ -212,6 +216,7 @@ function App() {
     currentView,
     gitViewOpen,
     nodeViewOpen,
+    dshViewOpen,
     appsViewOpen,
     closeAllFeaturePages,
   ]);
@@ -1056,6 +1061,16 @@ function App() {
       if (nodeViewOpen && currentView === "providers") {
         return <NodeVersionsPage />;
       }
+      if (dshViewOpen && currentView === "providers") {
+        return (
+          <DshPage
+            onGoToNodePage={() => {
+              setDshViewOpen(false);
+              setNodeViewOpen(true);
+            }}
+          />
+        );
+      }
       if (gitViewOpen && currentView === "providers") {
         return (
           <GitAccountsPage
@@ -1642,7 +1657,18 @@ function App() {
                   className="flex items-center gap-1 rounded-xl bg-muted p-1"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
-                  <HarnessLauncherButton />
+                  <DshViewButton
+                    active={dshViewOpen}
+                    onToggle={() => {
+                      const next = !dshViewOpen;
+                      if (next) {
+                        setGitViewOpen(false);
+                        setNodeViewOpen(false);
+                        setAppsViewOpen(false);
+                      }
+                      setDshViewOpen(next);
+                    }}
+                  />
                   <NodeVersionSwitcher
                     active={nodeViewOpen}
                     onToggle={() => {
@@ -1650,6 +1676,7 @@ function App() {
                       if (next) {
                         setGitViewOpen(false);
                         setAppsViewOpen(false);
+                        setDshViewOpen(false);
                       }
                       setNodeViewOpen(next);
                     }}
@@ -1661,6 +1688,7 @@ function App() {
                       if (next) {
                         setNodeViewOpen(false);
                         setAppsViewOpen(false);
+                        setDshViewOpen(false);
                       }
                       setGitViewOpen(next);
                     }}
@@ -1672,6 +1700,7 @@ function App() {
                         setAppsViewOpen(true);
                         setGitViewOpen(false);
                         setNodeViewOpen(false);
+                        setDshViewOpen(false);
                       }}
                       title={t("appsPage.backToApps", {
                         defaultValue: "返回应用列表",
@@ -1691,6 +1720,7 @@ function App() {
                       if (next) {
                         setGitViewOpen(false);
                         setNodeViewOpen(false);
+                        setDshViewOpen(false);
                       }
                       setAppsViewOpen(next);
                     }}
