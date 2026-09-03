@@ -1627,6 +1627,7 @@ pub fn run() {
             commands::open_provider_terminal,
             commands::open_terminal_at_directory,
             commands::get_git_status,
+            commands::launch_deepseek_harness,
             // Universal Provider management
             commands::get_universal_providers,
             commands::get_universal_provider,

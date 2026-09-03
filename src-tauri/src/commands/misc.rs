@@ -3816,6 +3816,165 @@ fn launch_terminal_with_env(
     Err("不支持的操作系统".to_string())
 }
 
+// ── DeepSeek Harness（dsh）内置集成 ─────────────────────────
+// harness/ 目录随项目分发（不含 node_modules）；`pnpm dsh web` 直接以 tsx 跑
+// 源码，无需构建。首次启动先 pnpm install（pnpm 全局 store 硬链接，很快）。
+
+/// 定位内置 harness 目录：依次探测 exe 同级/上级（repo 的 target/release 布局
+/// 与安装目录布局）与进程工作目录下的 harness/，以 apps/cli/src/bin.ts 为标志。
+fn locate_harness_dir() -> Option<std::path::PathBuf> {
+    let marker = ["apps", "cli", "src", "bin.ts"];
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent()?.to_path_buf();
+        for _ in 0..3 {
+            candidates.push(dir.join("harness"));
+            if let Some(parent) = dir.parent() {
+                dir = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("harness"));
+    }
+    candidates
+        .into_iter()
+        .find(|c| marker.iter().fold(c.clone(), |p, m| p.join(m)).exists())
+}
+
+fn dsh_port_open() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:3080".parse().unwrap(),
+        std::time::Duration::from_millis(400),
+    )
+    .is_ok()
+}
+
+/// 启动内置 DeepSeek Harness Web UI（dsh web，默认 127.0.0.1:3080）。
+/// 已在跑则直接开浏览器；首次（缺 node_modules）先静默 pnpm install；
+/// 常驻进程以最小化控制台运行（日志落 %TEMP%\yuma-dsh-web.log），端口就绪后开浏览器。
+#[tauri::command]
+pub async fn launch_deepseek_harness(app: AppHandle) -> Result<String, String> {
+    // 已在运行：直接打开浏览器
+    if dsh_port_open() {
+        app.opener()
+            .open_url("http://127.0.0.1:3080", None::<String>)
+            .map_err(|e| format!("打开浏览器失败: {e}"))?;
+        return Ok("already-running".to_string());
+    }
+
+    let harness = locate_harness_dir()
+        .ok_or_else(|| "未找到内置 harness 目录（harness/apps/cli/src/bin.ts）".to_string())?;
+
+    // node + pnpm 的解析 PATH（合并注册表，兼容 nvm；PNPM_HOME 显式前置）
+    let search_path = crate::commands::nodejs::refreshed_search_path();
+    let run_path = {
+        let pnpm_home = std::env::var("PNPM_HOME").unwrap_or_default();
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        if pnpm_home.is_empty() {
+            search_path.clone()
+        } else {
+            format!("{pnpm_home}{sep}{search_path}")
+        }
+    };
+
+    // 首次启动：安装依赖（pnpm 共享全局 store，重复安装走硬链接）
+    if !harness.join("node_modules").exists() {
+        let dir = harness.clone();
+        let install_path = run_path.clone();
+        tokio::task::spawn_blocking(move || run_pnpm_install(&dir, &install_path))
+            .await
+            .map_err(|e| format!("安装任务异常: {e}"))??;
+    }
+
+    // 常驻启动 dsh web（Windows：最小化控制台 + 日志文件；Unix：nohup 后台）
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let temp = std::env::temp_dir();
+        let cmd_file = temp.join(format!("yuma_dsh_web_{}.cmd", std::process::id()));
+        let log_file = temp.join("yuma-dsh-web.log");
+        let harness_str = escape_windows_batch_value(&harness.to_string_lossy());
+        let log_str = escape_windows_batch_value(&log_file.to_string_lossy());
+        let path_str = escape_windows_batch_value(&run_path);
+        let content = format!(
+            "@echo off\r\nset \"PATH={path_str};%PATH%\"\r\ncd /d \"{harness_str}\"\r\npnpm dsh web --no-open >> \"{log_str}\" 2>&1\r\n"
+        );
+        std::fs::write(&cmd_file, &content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "DSH Web", "/MIN", "cmd", "/C"])
+            .arg(&cmd_file);
+        cmd.creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("启动 dsh web 失败: {e}"))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let log = std::env::temp_dir().join("yuma-dsh-web.log");
+        let log_display = log.display();
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "cd '{}' && pnpm dsh web --no-open >> '{}' 2>&1 &",
+                harness.display(),
+                log_display
+            ))
+            .env("PATH", &search_path)
+            .spawn()
+            .map_err(|e| format!("启动 dsh web 失败: {e}"))?;
+    }
+
+    // 等端口就绪（首次 tsx 冷启动较慢，最多等 3 分钟）
+    for _ in 0..90 {
+        if dsh_port_open() {
+            app.opener()
+                .open_url("http://127.0.0.1:3080", None::<String>)
+                .map_err(|e| format!("打开浏览器失败: {e}"))?;
+            return Ok("started".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    Err("dsh web 启动超时（3 分钟内端口未就绪），可查看日志 %TEMP%\\yuma-dsh-web.log".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn run_pnpm_install(harness: &std::path::Path, path_env: &str) -> Result<(), String> {
+    use std::process::Command;
+
+    let out = Command::new("pnpm")
+        .arg("install")
+        .arg("--prefer-offline")
+        .current_dir(harness)
+        .env("PATH", path_env)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("启动 pnpm 失败（未找到 pnpm？）: {e}"))?;
+    if !out.status.success() {
+        let tail = decode_command_output(&out.stderr);
+        let lines: Vec<&str> = tail.lines().collect();
+        let tail = lines[lines.len().saturating_sub(8)..].join("\n");
+        return Err(format!("pnpm install 失败:\n{tail}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_pnpm_install(harness: &std::path::Path, path_env: &str) -> Result<(), String> {
+    let status = std::process::Command::new("pnpm")
+        .arg("install")
+        .arg("--prefer-offline")
+        .current_dir(harness)
+        .env("PATH", path_env)
+        .status()
+        .map_err(|e| format!("执行 pnpm install 失败（未找到 pnpm？）: {e}"))?;
+    if !status.success() {
+        return Err("pnpm install 失败，请检查网络后重试".to_string());
+    }
+    Ok(())
+}
+
 /// 检测本机 Git 是否可用，返回版本号（如 "2.50.1.windows.1"）；未安装返回 None。
 #[tauri::command]
 pub async fn get_git_status() -> Result<Option<String>, String> {

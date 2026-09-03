@@ -67,6 +67,7 @@ import { AppsPage } from "@/components/AppsPage";
 import { ToolManagementBar } from "@/components/providers/ToolManagementBar";
 import { GitPlatformSwitcher } from "@/components/GitPlatformSwitcher";
 import { NodeVersionSwitcher } from "@/components/NodeVersionSwitcher";
+import { HarnessLauncherButton } from "@/components/HarnessLauncherButton";
 import { NodeVersionsPage } from "@/components/node/NodeVersionsPage";
 import { GitAccountsPage } from "@/components/git/GitAccountsPage";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
@@ -1641,6 +1642,7 @@ function App() {
                   className="flex items-center gap-1 rounded-xl bg-muted p-1"
                   style={{ WebkitAppRegion: "no-drag" } as any}
                 >
+                  <HarnessLauncherButton />
                   <NodeVersionSwitcher
                     active={nodeViewOpen}
                     onToggle={() => {
