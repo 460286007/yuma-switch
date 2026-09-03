@@ -4090,9 +4090,11 @@ fn detect_harness_status() -> HarnessStatus {
         let sp = crate::commands::nodejs::refreshed_search_path();
         #[cfg(target_os = "windows")]
         {
-            let out = crate::commands::nodejs::command_no_window("pnpm.cmd")
+            // pnpm.cmd 垫片同样需要 cmd /C 解析
+            let mut cmd = crate::commands::nodejs::command_no_window("cmd");
+            let out = cmd
+                .args(["/C", "pnpm", "-v"])
                 .env("PATH", &sp)
-                .arg("-v")
                 .output();
             match out {
                 Ok(o) if o.status.success() => {
@@ -4173,8 +4175,9 @@ pub async fn harness_deploy() -> Result<String, String> {
 #[cfg(target_os = "windows")]
 fn install_pnpm_globally(path_env: &str) -> Result<(), String> {
     use std::process::Command;
-    let out = Command::new("npm.cmd")
-        .args(["install", "-g", "pnpm"])
+    // 同 run_pnpm_install：经 cmd /C 解析 npm.cmd 垫片
+    let out = Command::new("cmd")
+        .args(["/C", "npm", "install", "-g", "pnpm"])
         .env("PATH", path_env)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -4334,9 +4337,10 @@ async fn dsh_tool_version() -> ToolVersion {
 fn run_pnpm_install(harness: &std::path::Path, path_env: &str) -> Result<(), String> {
     use std::process::Command;
 
-    let out = Command::new("pnpm")
-        .arg("install")
-        .arg("--prefer-offline")
+    // pnpm 是 npm 垫片（pnpm.cmd），CreateProcess 只认 .exe —— 必须经 cmd /C
+    // 让 cmd.exe 按 PATHEXT 解析，否则 "program not found"。
+    let out = Command::new("cmd")
+        .args(["/C", "pnpm", "install", "--prefer-offline"])
         .current_dir(harness)
         .env("PATH", path_env)
         .creation_flags(CREATE_NO_WINDOW)
