@@ -3997,52 +3997,117 @@ fn mask_key(key: &str) -> String {
     }
 }
 
-/// 行级读取 .credentials.yaml 中某个 KEY 的值（保留注释/格式的扁平映射）。
+/// 行级读取 .credentials.yaml 中某个 KEY 的值。
+/// 兼容 dsh 的两种布局：version-1（`refs:` 段下缩进键）与旧扁平（顶格键）。
+/// 键行判定：以 "KEY:" 开头；version-1 时要求处于 refs 段（有缩进），
+/// 扁平时要求顶格——避免把段名/其它顶层键误当凭证。
 fn read_credential(key: &str) -> Option<String> {
     let path = dsh_credentials_path()?;
     let content = std::fs::read_to_string(path).ok()?;
     let prefix = format!("{key}:");
+    let has_refs = content.lines().any(|l| l.trim() == "refs:");
+    let mut in_refs = false;
     for line in content.lines() {
         let t = line.trim();
-        if let Some(rest) = t.strip_prefix(&prefix) {
-            let v = rest.trim().trim_matches('"').trim_matches('\'').trim();
-            if !v.is_empty() {
-                return Some(v.to_string());
+        if t == "refs:" {
+            in_refs = true;
+            continue;
+        }
+        let indented = line.starts_with(' ');
+        if has_refs && !indented {
+            in_refs = false; // 离开 refs 段
+        }
+        let in_credential_section = !has_refs || in_refs;
+        if in_credential_section {
+            if let Some(rest) = t.strip_prefix(&prefix) {
+                let v = rest.trim().trim_matches('"').trim_matches('\'').trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
             }
         }
     }
     None
 }
 
-/// 行级写入（只 patch 自己的 key，其余行原样保留；不存在则追加）。
+/// 行级写入（只 patch 自己的 key，其余行原样保留）。
+/// 文件已是 version-1 → 在 refs 段内维护（保持 2 空格缩进）；
+/// 旧扁平/新文件 → 统一迁移/创建为 version-1 布局。
 fn write_credential(key: &str, value: &str) -> Result<(), String> {
     let path = dsh_credentials_path().ok_or("无法定位用户主目录")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建 ~/.dsh 失败: {e}"))?;
     }
     let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let prefix = format!("{key}:");
-    let new_line = format!("{key}: {value}");
-    let mut replaced = false;
-    let mut out_lines: Vec<String> = Vec::new();
-    for line in content.lines() {
-        if line.trim().starts_with(&prefix) {
-            out_lines.push(new_line.clone());
-            replaced = true;
-        } else {
+    let has_version = content.lines().any(|l| l.trim().starts_with("version:"));
+
+    if has_version {
+        // version-1：refs 段内 patch/插入（缩进 2 空格）
+        let mut out_lines: Vec<String> = Vec::new();
+        let mut replaced = false;
+        let mut in_refs = false;
+        let mut refs_inserted = false;
+        for line in content.lines() {
+            let t = line.trim();
+            let indented = line.starts_with(' ');
+            if t == "refs:" {
+                in_refs = true;
+                out_lines.push(line.to_string());
+                continue;
+            }
+            if in_refs && !indented && !t.is_empty() {
+                // refs 段结束：若还没写入则在段末插入
+                if !replaced {
+                    out_lines.push(format!("  {key}: {value}"));
+                    replaced = true;
+                }
+                in_refs = false;
+            }
+            if in_refs && t.starts_with(&format!("{key}:")) && !replaced {
+                out_lines.push(format!("  {key}: {value}"));
+                replaced = true;
+                continue;
+            }
             out_lines.push(line.to_string());
         }
-    }
-    if !replaced {
-        if !out_lines.is_empty() && !content.ends_with('\n') {
-            // 保留原结尾缺换行的情况，先补
+        if in_refs && !replaced {
+            out_lines.push(format!("  {key}: {value}"));
+            replaced = true;
         }
-        out_lines.push(new_line);
+        if !replaced && !refs_inserted {
+            // 有 version 但没有 refs 段：补一个
+            out_lines.push("refs:".to_string());
+            out_lines.push(format!("  {key}: {value}"));
+        }
+        let mut out = out_lines.join("\n");
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        std::fs::write(&path, out).map_err(|e| format!("写入钥匙失败: {e}"))?;
+        return Ok(());
     }
-    let mut out = out_lines.join("\n");
-    if !out.ends_with('\n') {
-        out.push('\n');
+
+    // 旧扁平（或空文件）：迁移为 version-1，原条目全部收进 refs 段
+    let new_line = format!("{key}: {value}");
+    let mut refs: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if t.starts_with(&format!("{key}:")) {
+            refs.push(format!("  {new_line}"));
+        } else if t.contains(':') && !t.starts_with(' ') {
+            // 其它顶格凭证条目：保留进 refs
+            refs.push(format!("  {t}"));
+        }
     }
+    if !refs.iter().any(|r| r.trim().starts_with(&format!("{key}:"))) {
+        refs.push(format!("  {new_line}"));
+    }
+    let mut out = String::from("version: 1\nrefs:\n");
+    out.push_str(&refs.join("\n"));
+    out.push('\n');
     std::fs::write(&path, out).map_err(|e| format!("写入钥匙失败: {e}"))?;
     Ok(())
 }
