@@ -4734,9 +4734,15 @@ pub async fn dsh_save_provider(input: DshProviderInput) -> Result<String, String
                 }
             }
         }
+        // 编辑时沿用原 apiKeyEnv：改名会让已有钥匙变孤儿、新引用找不到钥匙
+        let effective_key_env = node
+            .get("apiKeyEnv")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| key_env.clone());
         node.insert(
             Y::String("apiKeyEnv".into()),
-            Y::String(key_env.clone()),
+            Y::String(effective_key_env.clone()),
         );
         node.insert(
             Y::String("api".into()),
@@ -4777,7 +4783,7 @@ pub async fn dsh_save_provider(input: DshProviderInput) -> Result<String, String
 
         // 钥匙
         if let Some(k) = key {
-            write_credential(&key_env, &k)?;
+            write_credential(&effective_key_env, &k)?;
         }
 
         // sidecar 元数据（官网链接）
