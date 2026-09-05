@@ -25,7 +25,7 @@ jobs:
             bundles: dmg
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 版本取自 package.json 的 packageManager 字段，勿传 version 以免冲突
       - uses: pnpm/action-setup@v4
