@@ -1,6 +1,6 @@
 [package]
 name = "yuma-study"
-version = "1.0.1"
+version = "1.6.5"
 description = "Yuma Study - All-in-One Assistant for Claude Code, Codex & Gemini CLI"
 authors = ["Jason Young"]
 license = "MIT"
