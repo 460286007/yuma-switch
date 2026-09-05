@@ -39,14 +39,37 @@ except SystemExit:
         print("⚠ 构建失败，但仓库已含预编译 lib/，继续暂存（全新机器需先修构建）")
     else:
         raise
-# 3) 暂存镜像：完整源码+构建产物，仅排除 node_modules / IDE 杂物
-rc = subprocess.run(
-    ["robocopy", HARNESS, DIST, "/MIR",
-     "/XD", "node_modules", ".zcode", ".git",
-     "/XF", "*.tsbuildinfo",
-     "/NFL", "/NDL", "/NJH", "/R:1", "/W:1"],
-    capture_output=True).returncode
-if rc >= 8:
-    sys.exit(f"robocopy 失败 code={rc}")
+# 3) 暂存镜像：完整源码+构建产物，仅排除 node_modules / IDE 杂物（跨平台）
+import shutil
+import stat
+
+IGNORE_DIRS = {"node_modules", ".zcode", ".git"}
+
+def copy_tree():
+    def ignore(directory, entries):
+        skipped = set()
+        for e in entries:
+            full = os.path.join(directory, e)
+            if os.path.isdir(full) and e in IGNORE_DIRS:
+                skipped.add(e)
+            elif e.endswith(".tsbuildinfo"):
+                skipped.add(e)
+        return skipped
+
+    if os.path.exists(DIST):
+        shutil.rmtree(DIST)
+    shutil.copytree(HARNESS, DIST, ignore=ignore)
+
+if os.name == "nt":
+    rc = subprocess.run(
+        ["robocopy", HARNESS, DIST, "/MIR",
+         "/XD", "node_modules", ".zcode", ".git",
+         "/XF", "*.tsbuildinfo",
+         "/NFL", "/NDL", "/NJH", "/R:1", "/W:1"],
+        capture_output=True).returncode
+    if rc >= 8:
+        sys.exit(f"robocopy 失败 code={rc}")
+else:
+    copy_tree()
 files = sum(len(fs) for _, _, fs in os.walk(DIST))
 print(f"✓ harness-dist 就绪：{files} 个文件")
