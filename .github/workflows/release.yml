@@ -1,9 +1,8 @@
 name: Release
 
+# 上游发布流程依赖 R2/环境密钥，个人仓库不具备；安装包统一走 build.yml
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
