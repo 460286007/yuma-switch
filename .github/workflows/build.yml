@@ -44,6 +44,14 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/setup-nasm@v1
 
+      # ring 0.17 交叉编译 aarch64-pc-windows-msvc 需要 clang（cc 家族探测）
+      - name: Setup LLVM (Windows arm64)
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        shell: bash
+        run: |
+          choco install -y llvm --no-progress
+          echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
