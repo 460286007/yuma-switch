@@ -67,7 +67,16 @@ jobs:
         run: python scripts/stage_harness.py
 
       - name: Build installer
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        shell: bash
+        run: |
+          set +e
+          pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} > build_output.txt 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            tail -60 build_output.txt
+            grep -m 3 -E "error(\[E[0-9]+\])?: " build_output.txt | sed 's/^/::error::/'
+            exit $code
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
