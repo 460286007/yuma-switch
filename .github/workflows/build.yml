@@ -20,7 +20,7 @@ jobs:
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             bundles: nsis
-          - os: macos-13
+          - os: macos-14
             target: x86_64-apple-darwin
             bundles: dmg
           - os: macos-14
@@ -74,6 +74,7 @@ jobs:
       - name: Build installer
         shell: bash
         run: |
+          rustup target add ${{ matrix.target }}
           df -h . | tail -1 | sed 's/^/::notice::disk before build: /'
           set +e
           pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} > build_output.txt 2>&1
